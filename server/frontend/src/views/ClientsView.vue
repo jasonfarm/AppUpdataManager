@@ -16,9 +16,11 @@
       <el-table-column prop="os_version" label="系统版本" />
       <el-table-column prop="memory" label="内存" width="140" />
       <el-table-column prop="cpu" label="CPU" />
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="400" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="openUpdateSoftware(row)">更新软件</el-button>
+          <el-button size="small" @click="action(row, 'update-resource')">更新资源包</el-button>
+          <el-button size="small" @click="openRename(row)">改名</el-button>
           <el-button size="small" @click="action(row, 'start')">启动</el-button>
           <el-button size="small" @click="action(row, 'stop')">停止</el-button>
           <el-button size="small" @click="action(row, 'restart')">重启</el-button>
@@ -50,13 +52,21 @@
         <el-button type="primary" @click="confirmUpdateSoftware" :loading="updateLoading">确定</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="renameDialogVisible" title="修改客户端名称" width="400px">
+      <el-input v-model="editingName" placeholder="请输入新名称" />
+      <template #footer>
+        <el-button @click="renameDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmRename" :loading="renameLoading">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listClients, clientAction, listSoftware } from '../api'
+import { listClients, clientAction, listSoftware, updateClientName } from '../api'
 
 const loading = ref(false)
 const clients = ref([] as any[])
@@ -67,6 +77,11 @@ const versionsLoading = ref(false)
 const softwareVersions = ref([] as any[])
 const selectedVersion = ref('')
 const currentClient = ref<any>(null)
+
+const renameDialogVisible = ref(false)
+const renameLoading = ref(false)
+const editingName = ref('')
+const editingClientId = ref(0)
 
 async function load() {
   loading.value = true
@@ -108,6 +123,27 @@ async function confirmUpdateSoftware() {
     ElMessage.error(e.response?.data?.error || '下发失败')
   } finally {
     updateLoading.value = false
+  }
+}
+
+function openRename(row: any) {
+  editingClientId.value = row.id
+  editingName.value = row.name
+  renameDialogVisible.value = true
+}
+
+async function confirmRename() {
+  if (!editingClientId.value || !editingName.value) return
+  renameLoading.value = true
+  try {
+    await updateClientName(editingClientId.value, editingName.value)
+    ElMessage.success('名称已修改')
+    renameDialogVisible.value = false
+    load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '修改失败')
+  } finally {
+    renameLoading.value = false
   }
 }
 

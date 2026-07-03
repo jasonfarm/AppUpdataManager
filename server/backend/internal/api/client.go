@@ -1,10 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"example.com/appupdatemanager/server/internal/model"
 	"example.com/appupdatemanager/server/internal/store"
 	"example.com/appupdatemanager/server/internal/ws"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -111,6 +111,70 @@ func UpdateClientSoftware(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 		}
 		hub.SendToClient(client.Name, payload)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "version": version})
+	}
+}
+
+// UpdateClientResource 向指定客户端下发资源包更新命令，使用当前最新资源包。
+func UpdateClientResource(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		client, err := store.GetClient(db, id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "client not found"})
+			return
+		}
+
+		latest, err := store.GetLatestResourcePackage(db)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no latest resource package set"})
+			return
+		}
+
+		payload := model.CommandPayload{
+			Command:     "update_resource",
+			Version:     latest.Version,
+			DownloadURL: fmt.Sprintf("/files/resource/%s", filepathBase(latest.Filepath)),
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		cmd := &model.ClientCommand{
+			ClientID:    client.ID,
+			CommandType: payload.Command,
+			Payload:     string(payloadBytes),
+			Status:      "pending",
+		}
+		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		hub.SendToClient(client.Name, payload)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "version": latest.Version})
+	}
+}
+
+// UpdateClientName 更新指定客户端的显示名称。
+func UpdateClientName(db *store.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		var req struct {
+			Name string `json:"name" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := store.UpdateClientName(db, id, req.Name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
 

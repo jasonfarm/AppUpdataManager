@@ -9,6 +9,9 @@
         <el-menu-item index="/software">
           <span>软件版本</span>
         </el-menu-item>
+        <el-menu-item index="/resource-packages">
+          <span>资源包</span>
+        </el-menu-item>
         <el-menu-item index="/clients">
           <span>客户端管理</span>
         </el-menu-item>

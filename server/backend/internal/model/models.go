@@ -48,6 +48,24 @@ type ClientVersion struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// ResourcePackage 表示一个资源包（zip 压缩包），用于随软件版本一起下发给客户端。
+type ResourcePackage struct {
+	// ID 资源包唯一标识。
+	ID int64 `json:"id"`
+	// Name 资源包显示名称。
+	Name string `json:"name"`
+	// Version 资源包版本号。
+	Version string `json:"version"`
+	// Filename 原始上传文件名。
+	Filename string `json:"filename"`
+	// Filepath 文件在服务器本地存储的绝对路径。
+	Filepath string `json:"filepath"`
+	// IsLatest 是否为当前最新资源包。
+	IsLatest bool `json:"is_latest"`
+	// CreatedAt 资源包创建时间。
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Client 表示一个已注册或已连接的客户端。
 type Client struct {
 	// ID 客户端唯一标识。

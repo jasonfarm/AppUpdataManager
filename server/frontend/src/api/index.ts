@@ -73,10 +73,36 @@ export function setLatestClientVersion(id: number) {
   return api.post(`/client-versions/${id}/latest`)
 }
 
+export function listResourcePackages() {
+  return api.get('/resource-packages')
+}
+
+export function uploadResourcePackage(formData: FormData) {
+  return api.post('/resource-packages', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export function deleteResourcePackage(id: number) {
+  return api.delete(`/resource-packages/${id}`)
+}
+
+export function setLatestResourcePackage(id: number) {
+  return api.post(`/resource-packages/${id}/latest`)
+}
+
+export function updateResourcePackageName(id: number, name: string) {
+  return api.put(`/resource-packages/${id}/name`, { name })
+}
+
 export function listClients() {
   return api.get('/clients')
 }
 
 export function clientAction(id: number, action: string, version?: string) {
   return api.post(`/clients/${id}/${action}`, version ? { version } : {})
+}
+
+export function updateClientName(id: number, name: string) {
+  return api.put(`/clients/${id}/name`, { name })
 }

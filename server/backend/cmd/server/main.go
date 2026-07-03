@@ -1,8 +1,8 @@
 package main
 
 import (
-	"example.com/appupdatemanager/server/internal/api"
 	"example.com/appupdatemanager/server/config"
+	"example.com/appupdatemanager/server/internal/api"
 	"example.com/appupdatemanager/server/internal/middleware"
 	"example.com/appupdatemanager/server/internal/store"
 	"example.com/appupdatemanager/server/internal/ws"
@@ -69,13 +69,21 @@ func main() {
 		apiGroup.POST("/client-versions", middleware.Auth(cfg), api.CreateClientVersion(db, *dataDir))
 		apiGroup.POST("/client-versions/:id/latest", middleware.Auth(cfg), api.SetLatestClientVersion(db))
 
+		apiGroup.GET("/resource-packages", middleware.Auth(cfg), api.ListResourcePackages(db))
+		apiGroup.POST("/resource-packages", middleware.Auth(cfg), api.CreateResourcePackage(db, *dataDir))
+		apiGroup.DELETE("/resource-packages/:id", middleware.Auth(cfg), api.DeleteResourcePackage(db, *dataDir))
+		apiGroup.POST("/resource-packages/:id/latest", middleware.Auth(cfg), api.SetLatestResourcePackage(db))
+		apiGroup.PUT("/resource-packages/:id/name", middleware.Auth(cfg), api.UpdateResourcePackageName(db))
+
 		apiGroup.GET("/clients", middleware.Auth(cfg), api.ListClients(db))
 		apiGroup.GET("/clients/:id", middleware.Auth(cfg), api.GetClient(db))
 		apiGroup.POST("/clients/:id/update-software", middleware.Auth(cfg), api.UpdateClientSoftware(hub, db))
+		apiGroup.POST("/clients/:id/update-resource", middleware.Auth(cfg), api.UpdateClientResource(hub, db))
 		apiGroup.POST("/clients/:id/update-self", middleware.Auth(cfg), api.UpdateClientSelf(hub, db))
 		apiGroup.POST("/clients/:id/start", middleware.Auth(cfg), api.StartClientSoftware(hub, db))
 		apiGroup.POST("/clients/:id/stop", middleware.Auth(cfg), api.StopClientSoftware(hub, db))
 		apiGroup.POST("/clients/:id/restart", middleware.Auth(cfg), api.RestartClientSoftware(hub, db))
+		apiGroup.PUT("/clients/:id/name", middleware.Auth(cfg), api.UpdateClientName(db))
 	}
 
 	// Serve frontend static files (production build)

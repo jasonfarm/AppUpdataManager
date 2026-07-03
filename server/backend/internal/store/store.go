@@ -1,8 +1,8 @@
 package store
 
 import (
-	"example.com/appupdatemanager/server/internal/model"
 	"database/sql"
+	"example.com/appupdatemanager/server/internal/model"
 	"os"
 	"path/filepath"
 
@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS software_versions (
 
 CREATE TABLE IF NOT EXISTS client_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    filepath TEXT NOT NULL,
+    is_latest INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS resource_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
     version TEXT NOT NULL,
     filename TEXT NOT NULL,
     filepath TEXT NOT NULL,
@@ -256,6 +266,82 @@ func DeleteClientVersion(db *DB, id int64) (string, error) {
 	return path, err
 }
 
+// --- Resource Packages ---
+
+// ListResourcePackages 按创建时间降序返回所有资源包。
+func ListResourcePackages(db *DB) ([]model.ResourcePackage, error) {
+	rows, err := db.Query(`SELECT id, name, version, filename, filepath, is_latest, created_at FROM resource_packages ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := make([]model.ResourcePackage, 0)
+	for rows.Next() {
+		var v model.ResourcePackage
+		var isLatest int
+		if err := rows.Scan(&v.ID, &v.Name, &v.Version, &v.Filename, &v.Filepath, &isLatest, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		v.IsLatest = isLatest == 1
+		list = append(list, v)
+	}
+	return list, rows.Err()
+}
+
+// CreateResourcePackage 插入一条新的资源包记录，并回填自增 ID。
+func CreateResourcePackage(db *DB, v *model.ResourcePackage) error {
+	res, err := db.Exec(
+		`INSERT INTO resource_packages (name, version, filename, filepath, is_latest) VALUES (?, ?, ?, ?, ?)`,
+		v.Name, v.Version, v.Filename, v.Filepath, boolToInt(v.IsLatest),
+	)
+	if err != nil {
+		return err
+	}
+	v.ID, _ = res.LastInsertId()
+	return nil
+}
+
+// DeleteResourcePackage 删除指定 id 的资源包记录，并返回其文件路径。
+func DeleteResourcePackage(db *DB, id int64) (string, error) {
+	row := db.QueryRow(`SELECT filepath FROM resource_packages WHERE id = ?`, id)
+	var path string
+	if err := row.Scan(&path); err != nil {
+		return "", err
+	}
+	_, err := db.Exec(`DELETE FROM resource_packages WHERE id = ?`, id)
+	return path, err
+}
+
+// SetLatestResourcePackage 清除所有资源包的最新标记，并将指定 id 设为最新。
+func SetLatestResourcePackage(db *DB, id int64) error {
+	_, err := db.Exec(`UPDATE resource_packages SET is_latest = 0`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE resource_packages SET is_latest = 1 WHERE id = ?`, id)
+	return err
+}
+
+// GetLatestResourcePackage 返回标记为最新的资源包。
+func GetLatestResourcePackage(db *DB) (*model.ResourcePackage, error) {
+	row := db.QueryRow(`SELECT id, name, version, filename, filepath, is_latest, created_at FROM resource_packages WHERE is_latest = 1 LIMIT 1`)
+	var v model.ResourcePackage
+	var isLatest int
+	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Filename, &v.Filepath, &isLatest, &v.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	v.IsLatest = isLatest == 1
+	return &v, nil
+}
+
+// UpdateResourcePackageName 更新指定资源包的显示名称。
+func UpdateResourcePackageName(db *DB, id int64, name string) error {
+	_, err := db.Exec(`UPDATE resource_packages SET name = ? WHERE id = ?`, name, id)
+	return err
+}
+
 // --- Clients ---
 
 // UpsertClient 根据客户端名称插入或更新客户端记录，存在时更新状态与版本等信息。
@@ -387,6 +473,12 @@ func GetClientByName(db *DB, name string) (*model.Client, error) {
 	}
 	c.IsRunning = isRunning == 1
 	return c, nil
+}
+
+// UpdateClientName 更新指定客户端的显示名称。
+func UpdateClientName(db *DB, id int64, name string) error {
+	_, err := db.Exec(`UPDATE clients SET name = ? WHERE id = ?`, name, id)
+	return err
 }
 
 // UpdateClientRunning 更新指定客户端的运行状态与进程运行时长。

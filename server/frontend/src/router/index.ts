@@ -4,6 +4,7 @@ import LoginView from '../views/LoginView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import SoftwareView from '../views/SoftwareView.vue'
+import ResourcePackagesView from '../views/ResourcePackagesView.vue'
 import ClientsView from '../views/ClientsView.vue'
 
 const router = createRouter({
@@ -17,6 +18,7 @@ const router = createRouter({
       children: [
         { path: '', name: 'overview', component: OverviewView },
         { path: 'software', name: 'software', component: SoftwareView },
+        { path: 'resource-packages', name: 'resource-packages', component: ResourcePackagesView },
         { path: 'clients', name: 'clients', component: ClientsView },
       ],
     },
