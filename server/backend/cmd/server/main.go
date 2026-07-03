@@ -16,7 +16,7 @@ import (
 // main 解析命令行参数，加载配置、初始化数据库，并启动 HTTP/WebSocket 服务。
 func main() {
 	var (
-		addr       = flag.String("addr", ":8080", "HTTP listen address")
+		addr       = flag.String("addr", "0.0.0.0:8080", "HTTP listen address")
 		configPath = flag.String("config", "config/accounts.txt", "accounts config file path")
 		dataDir    = flag.String("data", "./data", "data directory for uploads and database")
 	)

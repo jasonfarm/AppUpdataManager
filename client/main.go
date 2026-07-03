@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"example.com/appupdatemanager/client/internal/autostart"
 	"example.com/appupdatemanager/client/internal/config"
+	"example.com/appupdatemanager/client/internal/logger"
 	"example.com/appupdatemanager/client/internal/server"
 	"example.com/appupdatemanager/client/internal/software"
 	"example.com/appupdatemanager/client/internal/sysinfo"
@@ -50,6 +51,17 @@ func main() {
 		cfg = config.Default()
 	}
 
+	// 初始化日志记录器，日志写入用户配置目录下的 client.log 文件。
+	logFilePath := filepath.Join(config.Dir(), "client.log")
+	appLogger, err := logger.New(logFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init logger error: %v\n", err)
+		appLogger = nil
+	} else {
+		defer appLogger.Close()
+		appLogger.Infof("客户端启动，日志文件: %s", logFilePath)
+	}
+
 	a := app.NewWithID("com.appupdatemanager.client")
 	appIcon := fyne.NewStaticResource("icon.svg", iconSVGBytes)
 	a.SetIcon(appIcon)
@@ -80,6 +92,9 @@ func main() {
 
 	sysInfo, err := sysinfo.Collect()
 	if err != nil {
+		if appLogger != nil {
+			appLogger.Errorf("收集系统信息失败: %v", err)
+		}
 		sysInfo = &sysinfo.Info{}
 	}
 
@@ -88,9 +103,9 @@ func main() {
 	// Server client
 	var srvClient *server.Client
 	commandHandler := func(cmd string, payload map[string]string) {
-		handleCommand(cfg, swManager, cmd, payload)
+		handleCommand(cfg, swManager, appLogger, cmd, payload)
 	}
-	srvClient = server.NewClient(cfg, commandHandler)
+	srvClient = server.NewClient(cfg, appLogger, commandHandler)
 
 	// UI
 	statusLabel := widget.NewLabel(fmt.Sprintf("状态: 未连接 | 软件版本: %s | 运行中: %v", swManager.CurrentVersion(), swManager.IsRunning()))
@@ -112,6 +127,9 @@ func main() {
 		cfg.ClientName = clientNameEntry.Text
 		cfg.AutoStart = autoStartCheck.Checked
 		if err := cfg.Save(); err != nil {
+			if appLogger != nil {
+				appLogger.Errorf("保存配置失败: %v", err)
+			}
 			dialog.ShowError(err, w)
 			return
 		}
@@ -121,6 +139,9 @@ func main() {
 		} else {
 			_ = autostart.Disable(appName)
 		}
+		if appLogger != nil {
+			appLogger.Info("配置已保存")
+		}
 		dialog.ShowInformation("保存成功", "设置已保存", w)
 	})
 
@@ -128,7 +149,7 @@ func main() {
 		if srvClient != nil {
 			_ = srvClient.Close()
 		}
-		srvClient = server.NewClient(cfg, commandHandler)
+		srvClient = server.NewClient(cfg, appLogger, commandHandler)
 		hb := &server.HeartbeatData{
 			IP:        sysInfo.IP,
 			OSVersion: sysInfo.OSVersion,
@@ -136,8 +157,14 @@ func main() {
 			CPU:       sysInfo.CPU,
 		}
 		if err := srvClient.Connect(hb); err != nil {
+			if appLogger != nil {
+				appLogger.Errorf("手动连接服务器失败: %v", err)
+			}
 			dialog.ShowError(err, w)
 			return
+		}
+		if appLogger != nil {
+			appLogger.Info("手动连接服务器成功")
 		}
 		statusLabel.SetText(fmt.Sprintf("状态: 已连接 | 软件版本: %s | 运行中: %v", swManager.CurrentVersion(), swManager.IsRunning()))
 	})
@@ -168,9 +195,17 @@ func main() {
 		widget.NewLabel(fmt.Sprintf("CPU: %s", sysInfo.CPU)),
 	)
 
+	var logTab fyne.CanvasObject
+	if appLogger != nil {
+		logTab = appLogger.CreateView()
+	} else {
+		logTab = container.NewCenter(widget.NewLabel("日志初始化失败"))
+	}
+
 	tabs := container.NewAppTabs(
 		container.NewTabItem("设置", settingsTab),
 		container.NewTabItem("状态", statusTab),
+		container.NewTabItem("日志", logTab),
 	)
 
 	w.SetContent(tabs)
@@ -216,7 +251,11 @@ func main() {
 			Memory:    sysInfo.Memory,
 			CPU:       sysInfo.CPU,
 		}
-		_ = srvClient.Connect(hb)
+		if err := srvClient.Connect(hb); err != nil {
+			if appLogger != nil {
+				appLogger.Errorf("自动连接服务器失败: %v", err)
+			}
+		}
 	}()
 
 	w.ShowAndRun()
@@ -231,7 +270,11 @@ func connectionStatus(c *server.Client) string {
 }
 
 // handleCommand 处理服务器下发的控制命令，包括软件更新、客户端自更新、启动、停止和重启操作。
-func handleCommand(cfg *config.Config, mgr *software.Manager, cmd string, payload map[string]string) {
+func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger, cmd string, payload map[string]string) {
+	if log != nil {
+		log.Infof("开始执行服务器命令: %s, 参数: %v", cmd, payload)
+	}
+
 	switch cmd {
 	case "update_software":
 		version := payload["version"]
@@ -242,48 +285,105 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, cmd string, payloa
 		}
 		dir, err := mgr.EnsureVersion(version)
 		if err != nil {
+			if log != nil {
+				log.Errorf("准备软件版本目录失败: %v", err)
+			}
 			return
 		}
 		savePath := filepath.Join(dir, filename)
-		if err := server.DownloadFile(cfg.ServerURL(), downloadURL, savePath); err != nil {
+		if err := server.DownloadFile(log, cfg.ServerURL(), downloadURL, savePath); err != nil {
 			return
 		}
 		_ = mgr.Stop()
-		_ = mgr.Start(version, filename)
+		if err := mgr.Start(version, filename); err != nil {
+			if log != nil {
+				log.Errorf("启动新版本软件失败: %v", err)
+			}
+			return
+		}
+		if log != nil {
+			log.Infof("软件已更新到版本 %s 并启动", version)
+		}
 	case "update_self":
 		downloadURL := payload["download_url"]
 		savePath, err := updater.DownloadPath()
 		if err != nil {
+			if log != nil {
+				log.Errorf("获取自更新下载路径失败: %v", err)
+			}
 			return
 		}
-		if err := server.DownloadFile(cfg.ServerURL(), downloadURL, savePath); err != nil {
+		if err := server.DownloadFile(log, cfg.ServerURL(), downloadURL, savePath); err != nil {
 			return
+		}
+		if log != nil {
+			log.Info("客户端自更新文件下载完成，准备退出并替换")
 		}
 		_ = updater.SelfUpdate(savePath)
 	case "start":
 		latestVer := mgr.CurrentVersion()
 		if latestVer == "" {
+			if log != nil {
+				log.Warn("启动命令被忽略，当前没有可用软件版本")
+			}
 			return
 		}
 		// Find executable in current version directory
 		dir := filepath.Join(mgr.VersionsDir(), latestVer)
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) == 0 {
+			if log != nil {
+				log.Errorf("查找可执行文件失败: %v", err)
+			}
 			return
 		}
-		_ = mgr.Start(latestVer, entries[0].Name())
+		if err := mgr.Start(latestVer, entries[0].Name()); err != nil {
+			if log != nil {
+				log.Errorf("启动软件失败: %v", err)
+			}
+			return
+		}
+		if log != nil {
+			log.Info("软件已启动")
+		}
 	case "stop":
-		_ = mgr.Stop()
+		if err := mgr.Stop(); err != nil {
+			if log != nil {
+				log.Errorf("停止软件失败: %v", err)
+			}
+			return
+		}
+		if log != nil {
+			log.Info("软件已停止")
+		}
 	case "restart":
 		latestVer := mgr.CurrentVersion()
 		if latestVer == "" {
+			if log != nil {
+				log.Warn("重启命令被忽略，当前没有可用软件版本")
+			}
 			return
 		}
 		dir := filepath.Join(mgr.VersionsDir(), latestVer)
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) == 0 {
+			if log != nil {
+				log.Errorf("查找可执行文件失败: %v", err)
+			}
 			return
 		}
-		_ = mgr.Restart(latestVer, entries[0].Name())
+		if err := mgr.Restart(latestVer, entries[0].Name()); err != nil {
+			if log != nil {
+				log.Errorf("重启软件失败: %v", err)
+			}
+			return
+		}
+		if log != nil {
+			log.Info("软件已重启")
+		}
+	default:
+		if log != nil {
+			log.Warnf("未知的服务器命令: %s", cmd)
+		}
 	}
 }

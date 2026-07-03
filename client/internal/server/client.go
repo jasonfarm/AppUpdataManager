@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"example.com/appupdatemanager/client/internal/config"
+	"example.com/appupdatemanager/client/internal/logger"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,7 @@ type CommandHandler func(cmd string, payload map[string]string)
 type Client struct {
 	cfg            *config.Config  // cfg 是客户端配置。
 	conn           *websocket.Conn // conn 是 WebSocket 连接。
+	logger         *logger.Logger  // logger 用于记录服务器交互日志。
 	handler        CommandHandler  // handler 是接收服务器命令的回调。
 	stopCh         chan struct{}   // stopCh 用于通知连接相关的 goroutine 退出。
 	wg             sync.WaitGroup  // wg 等待读写 goroutine 结束。
@@ -50,9 +52,10 @@ type Client struct {
 }
 
 // NewClient 创建一个新的服务器客户端实例。
-func NewClient(cfg *config.Config, handler CommandHandler) *Client {
+func NewClient(cfg *config.Config, log *logger.Logger, handler CommandHandler) *Client {
 	return &Client{
 		cfg:     cfg,
+		logger:  log,
 		handler: handler,
 		stopCh:  make(chan struct{}),
 	}
@@ -76,11 +79,18 @@ func (c *Client) Status() (string, bool, int64) {
 
 // Connect 建立与服务器的 WebSocket 连接，发送注册消息并启动读写 goroutine。
 func (c *Client) Connect(sysInfo *HeartbeatData) error {
+	if c.logger != nil {
+		c.logger.Infof("正在连接服务器: %s", c.cfg.WSURL())
+	}
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
 	conn, _, err := dialer.Dial(c.cfg.WSURL(), nil)
 	if err != nil {
+		if c.logger != nil {
+			c.logger.Errorf("连接服务器失败: %v", err)
+		}
 		return err
 	}
 	c.conn = conn
@@ -88,7 +98,13 @@ func (c *Client) Connect(sysInfo *HeartbeatData) error {
 	// Send register message
 	if err := c.send(Message{Type: "register", Data: map[string]string{"name": c.cfg.ClientName}}); err != nil {
 		conn.Close()
+		if c.logger != nil {
+			c.logger.Errorf("发送注册消息失败: %v", err)
+		}
 		return err
+	}
+	if c.logger != nil {
+		c.logger.Infof("已连接服务器并注册，客户端名称: %s", c.cfg.ClientName)
 	}
 
 	c.wg.Add(2)
@@ -104,6 +120,9 @@ func (c *Client) Close() error {
 		c.conn.Close()
 	}
 	c.wg.Wait()
+	if c.logger != nil {
+		c.logger.Info("已关闭服务器连接")
+	}
 	return nil
 }
 
@@ -131,18 +150,32 @@ func (c *Client) readLoop() {
 			case <-c.stopCh:
 				return
 			default:
+				if c.logger != nil {
+					c.logger.Errorf("读取服务器消息失败，连接断开: %v", err)
+				}
 				// reconnect handled by caller
 				return
 			}
 		}
 		var msg Message
 		if err := json.Unmarshal(data, &msg); err != nil {
+			if c.logger != nil {
+				c.logger.Warnf("解析服务器消息失败: %v, 原始数据: %s", err, string(data))
+			}
 			continue
 		}
+
+		if c.logger != nil {
+			c.logger.Infof("收到服务器消息，类型: %s", msg.Type)
+		}
+
 		if msg.Type == "command" {
 			payloadBytes, _ := json.Marshal(msg.Data)
 			var payload map[string]string
 			json.Unmarshal(payloadBytes, &payload)
+			if c.logger != nil {
+				c.logger.Infof("收到服务器命令: %s, 参数: %s", payload["command"], string(payloadBytes))
+			}
 			if c.handler != nil {
 				c.handler(payload["command"], payload)
 			}
@@ -168,47 +201,86 @@ func (c *Client) heartbeatLoop(sysInfo *HeartbeatData) {
 			sysInfo.ClientVersion = c.cfg.ClientVersion
 			sysInfo.Name = c.cfg.ClientName
 			if err := c.send(Message{Type: "heartbeat", Data: sysInfo}); err != nil {
+				if c.logger != nil {
+					c.logger.Errorf("发送心跳失败: %v", err)
+				}
 				return
+			}
+			if c.logger != nil {
+				c.logger.Info("已发送心跳")
 			}
 		}
 	}
 }
 
 // DownloadFile 从服务器下载文件并保存到指定本地路径。
-func DownloadFile(serverURL, relativeURL, savePath string) error {
+func DownloadFile(log *logger.Logger, serverURL, relativeURL, savePath string) error {
 	url := serverURL + relativeURL
+	if log != nil {
+		log.Infof("开始下载文件: %s -> %s", url, savePath)
+	}
 	resp, err := http.Get(url)
 	if err != nil {
+		if log != nil {
+			log.Errorf("下载文件请求失败: %v", err)
+		}
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if log != nil {
+			log.Errorf("下载文件失败: %s", resp.Status)
+		}
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 	out, err := os.Create(savePath)
 	if err != nil {
+		if log != nil {
+			log.Errorf("创建本地文件失败: %v", err)
+		}
 		return err
 	}
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
-	return err
+	if err != nil {
+		if log != nil {
+			log.Errorf("保存下载文件失败: %v", err)
+		}
+		return err
+	}
+	if log != nil {
+		log.Infof("文件下载完成: %s", savePath)
+	}
+	return nil
 }
 
 // ReportStatus 通过 HTTP POST 向服务器发送一次性的状态报告。
-func ReportStatus(serverURL string, status *HeartbeatData) error {
+func ReportStatus(log *logger.Logger, serverURL string, status *HeartbeatData) error {
 	data, err := json.Marshal(status)
 	if err != nil {
 		return err
 	}
 	url := serverURL + "/api/clients/status"
+	if log != nil {
+		log.Infof("正在上报状态到: %s", url)
+	}
 	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
+		if log != nil {
+			log.Errorf("上报状态失败: %v", err)
+		}
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if log != nil {
+			log.Errorf("上报状态失败: %s, 响应: %s", resp.Status, string(body))
+		}
 		return fmt.Errorf("report status failed: %s", string(body))
+	}
+	if log != nil {
+		log.Info("状态上报成功")
 	}
 	return nil
 }

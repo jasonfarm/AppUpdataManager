@@ -46,6 +46,13 @@ sudo journalctl -u appupdatemanager -f
 
 打开浏览器访问 `http://<server-ip>:8080`，使用 `accounts.txt` 中的账号登录。
 
+> 服务端默认监听 `0.0.0.0:8080`，即绑定所有网卡，因此局域网或公网中的其他电脑可以直接通过服务器 IP 访问。如果无法访问，请检查系统防火墙是否放行 8080 端口：
+>
+> ```bash
+> sudo ufw allow 8080/tcp
+> # 或云服务器安全组中放行 8080 端口
+> ```
+
 ## 客户端部署（Windows）
 
 ### 1. 构建

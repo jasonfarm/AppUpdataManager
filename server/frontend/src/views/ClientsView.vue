@@ -18,23 +18,55 @@
       <el-table-column prop="cpu" label="CPU" />
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="action(row, 'update-software')">更新软件</el-button>
+          <el-button size="small" type="primary" @click="openUpdateSoftware(row)">更新软件</el-button>
           <el-button size="small" @click="action(row, 'start')">启动</el-button>
           <el-button size="small" @click="action(row, 'stop')">停止</el-button>
           <el-button size="small" @click="action(row, 'restart')">重启</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="updateDialogVisible" title="更新软件" width="400px">
+      <el-form label-position="top">
+        <el-form-item label="选择版本（留空则更新到最新版本）">
+          <el-select
+            v-model="selectedVersion"
+            placeholder="请选择软件版本"
+            clearable
+            style="width: 100%"
+            v-loading="versionsLoading"
+          >
+            <el-option
+              v-for="item in softwareVersions"
+              :key="item.id"
+              :label="`${item.name} (${item.version})${item.is_latest ? ' [最新]' : ''}`"
+              :value="item.version"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="updateDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmUpdateSoftware" :loading="updateLoading">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { listClients, clientAction } from '../api'
+import { ElMessage } from 'element-plus'
+import { listClients, clientAction, listSoftware } from '../api'
 
 const loading = ref(false)
 const clients = ref([] as any[])
+
+const updateDialogVisible = ref(false)
+const updateLoading = ref(false)
+const versionsLoading = ref(false)
+const softwareVersions = ref([] as any[])
+const selectedVersion = ref('')
+const currentClient = ref<any>(null)
 
 async function load() {
   loading.value = true
@@ -46,19 +78,42 @@ async function load() {
   }
 }
 
-async function action(row: any, act: string) {
-  let version = undefined
-  if (act === 'update-software') {
-    const input = await ElMessageBox.prompt('留空则更新到最新版本，或输入指定版本号', '更新软件', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      inputValue: '',
-    }).catch(() => null)
-    if (input === null) return
-    version = input.value
-  }
+async function openUpdateSoftware(row: any) {
+  currentClient.value = row
+  selectedVersion.value = ''
+  updateDialogVisible.value = true
+  versionsLoading.value = true
   try {
-    await clientAction(row.id, act, version || undefined)
+    const res = await listSoftware()
+    softwareVersions.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '获取软件版本列表失败')
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function confirmUpdateSoftware() {
+  if (!currentClient.value) return
+  updateLoading.value = true
+  try {
+    await clientAction(
+      currentClient.value.id,
+      'update-software',
+      selectedVersion.value || undefined
+    )
+    ElMessage.success('命令已下发')
+    updateDialogVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '下发失败')
+  } finally {
+    updateLoading.value = false
+  }
+}
+
+async function action(row: any, act: string) {
+  try {
+    await clientAction(row.id, act)
     ElMessage.success('命令已下发')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '下发失败')

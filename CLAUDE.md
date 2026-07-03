@@ -28,7 +28,7 @@ go run ./cmd/server
 
 Run flags:
 
-- `-addr :8080` — HTTP listen address
+- `-addr 0.0.0.0:8080` — HTTP listen address (default binds to all interfaces so external browsers can access it)
 - `-config config/accounts.txt` — accounts file path
 - `-data ./data` — directory for SQLite DB and uploaded files
 
