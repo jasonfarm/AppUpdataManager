@@ -1,0 +1,14 @@
+[Unit]
+Description=AppUpdateManager Server
+After=network.target
+
+[Service]
+Type=simple
+User=appupdate
+WorkingDirectory=/opt/appupdatemanager
+ExecStart=/opt/appupdatemanager/appUpdateManager-server -addr :8080 -config /opt/appupdatemanager/accounts.txt -data /opt/appupdatemanager/data
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

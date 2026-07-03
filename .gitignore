@@ -1,0 +1,24 @@
+# Claude 会话文件
+.claude/
+
+# 依赖目录
+node_modules/
+
+# 构建产物
+dist/
+client/icon.syso
+server/backend/static/
+
+# 运行时数据
+server/backend/data/
+*.db
+*.db-shm
+*.db-wal
+
+# IDE 与系统文件
+.DS_Store
+.vscode/
+.idea/
+
+# 日志
+*.log

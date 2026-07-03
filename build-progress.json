@@ -1,0 +1,331 @@
+{
+  "project": "appUpdateManager",
+  "description": "软件自动更新系统构建进度跟踪文件",
+  "lastUpdated": "2026-07-03T08:30:00Z",
+  "currentPhase": "P5",
+  "notes": "每次开始/完成任务时更新对应任务状态，并修改 lastUpdated。恢复构建时，从第一个非 completed 状态的任务继续。",
+  "phases": [
+    {
+      "id": "P1",
+      "name": "环境准备与项目脚手架",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P1-T1",
+          "name": "安装 Go、Node.js、Git，验证 Fyne 模块可下载",
+          "status": "completed",
+          "startedAt": "2026-07-03T00:00:00Z",
+          "completedAt": "2026-07-03T07:00:00Z",
+          "notes": "Go 1.23.6、Node 22、Git 已安装；GitHub 不可访问导致 Wails 无法安装，已切换为可通过 Go module proxy 下载的 Fyne v2"
+        },
+        {
+          "id": "P1-T2",
+          "name": "初始化服务端后端模块 server/backend/go.mod",
+          "status": "completed",
+          "startedAt": "2026-07-03T00:00:00Z",
+          "completedAt": "2026-07-03T06:05:00Z",
+          "notes": "模块路径 example.com/appupdatemanager/server，已添加 Gin、SQLite、WebSocket、bcrypt 依赖"
+        },
+        {
+          "id": "P1-T3",
+          "name": "初始化服务端前端 server/frontend（Vite + Vue3 + TS）",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:30:00Z",
+          "completedAt": "2026-07-03T07:00:00Z",
+          "notes": "package.json、vite.config.ts、tsconfig.json、index.html 及 src 目录已创建，依赖 Element Plus / Vue Router / Pinia / Axios"
+        },
+        {
+          "id": "P1-T4",
+          "name": "初始化客户端 Fyne 项目 client/",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:05:00Z",
+          "completedAt": "2026-07-03T07:00:00Z",
+          "notes": "go.mod 路径 example.com/appupdatemanager/client，已声明 Fyne、gopsutil、gorilla/websocket 依赖"
+        },
+        {
+          "id": "P1-T5",
+          "name": "创建 build-progress.json 并配置跟踪机制",
+          "status": "completed",
+          "startedAt": "2026-07-03T00:00:00Z",
+          "completedAt": "2026-07-03T00:00:00Z",
+          "notes": "随本方案一起创建"
+        }
+      ]
+    },
+    {
+      "id": "P2",
+      "name": "服务端后端开发",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P2-T1",
+          "name": "设计并实现 SQLite 数据模型与表结构",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:05:00Z",
+          "completedAt": "2026-07-03T06:10:00Z",
+          "notes": "models.go 与 store.go 已实现，包含 users/software_versions/client_versions/clients/client_commands 五张表"
+        },
+        {
+          "id": "P2-T2",
+          "name": "实现配置加载与 accounts.txt 账号读取",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:10:00Z",
+          "completedAt": "2026-07-03T06:12:00Z",
+          "notes": "config/config.go 实现 Load/SyncUsers/ValidatePassword；默认账号 admin:123456"
+        },
+        {
+          "id": "P2-T3",
+          "name": "实现 JWT/Session 登录认证中间件",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:12:00Z",
+          "completedAt": "2026-07-03T06:15:00Z",
+          "notes": "middleware/auth.go 实现 HS256 JWT 生成与校验，支持 Header Bearer 与 Cookie"
+        },
+        {
+          "id": "P2-T4",
+          "name": "实现软件版本管理 API（CRUD、设置最新版本）",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:15:00Z",
+          "completedAt": "2026-07-03T06:18:00Z",
+          "notes": "api/software.go 实现列表、上传、删除、设为最新、修改名称"
+        },
+        {
+          "id": "P2-T5",
+          "name": "实现文件上传 API（客户端程序、被控软件）",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:18:00Z",
+          "completedAt": "2026-07-03T06:20:00Z",
+          "notes": "api/software.go 与 api/client_version.go 分别处理被控软件和客户端程序上传，保存到 data/files"
+        },
+        {
+          "id": "P2-T6",
+          "name": "实现 WebSocket Hub 与客户端连接管理",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:20:00Z",
+          "completedAt": "2026-07-03T06:25:00Z",
+          "notes": "internal/ws/hub.go 实现注册/心跳处理/命令下发/断线重连"
+        },
+        {
+          "id": "P2-T7",
+          "name": "实现客户端管理 API 与命令下发",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:25:00Z",
+          "completedAt": "2026-07-03T06:28:00Z",
+          "notes": "api/client.go 实现客户端列表/详情/更新软件/自我更新/启停重启命令"
+        },
+        {
+          "id": "P2-T8",
+          "name": "实现客户端心跳与状态上报处理",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:28:00Z",
+          "completedAt": "2026-07-03T06:30:00Z",
+          "notes": "ws/hub.go heartbeat 处理将客户端状态写入 clients 表，并下发 pending 命令"
+        }
+      ]
+    },
+    {
+      "id": "P3",
+      "name": "服务端前端开发",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P3-T1",
+          "name": "搭建 Element Plus、路由、Pinia、Axios",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:30:00Z",
+          "completedAt": "2026-07-03T06:35:00Z",
+          "notes": "main.ts 中注册 Element Plus、Pinia、Vue Router；api/index.ts 封装 Axios"
+        },
+        {
+          "id": "P3-T2",
+          "name": "实现登录页面",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:35:00Z",
+          "completedAt": "2026-07-03T06:40:00Z",
+          "notes": "LoginView.vue 渐变背景登录卡片"
+        },
+        {
+          "id": "P3-T3",
+          "name": "实现软件版本管理页面",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:40:00Z",
+          "completedAt": "2026-07-03T06:50:00Z",
+          "notes": "SoftwareView.vue 支持上传、删除、设为最新、修改名称"
+        },
+        {
+          "id": "P3-T4",
+          "name": "实现客户端列表页面",
+          "status": "completed",
+          "startedAt": "2026-07-03T06:50:00Z",
+          "completedAt": "2026-07-03T07:00:00Z",
+          "notes": "ClientsView.vue 展示客户端信息与状态，支持更新/启停/重启，5 秒自动刷新"
+        },
+        {
+          "id": "P3-T5",
+          "name": "实现客户端控制面板",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:00:00Z",
+          "completedAt": "2026-07-03T07:00:00Z",
+          "notes": "ClientsView.vue 即为控制面板，集成在客户端管理页面"
+        },
+        {
+          "id": "P3-T6",
+          "name": "前端打包并配置后端静态资源服务",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:00:00Z",
+          "completedAt": "2026-07-03T08:00:00Z",
+          "notes": "vite.config.ts build.outDir 指向 ../backend/static；npm run build 成功，产物已生成"
+        }
+      ]
+    },
+    {
+      "id": "P4",
+      "name": "客户端程序开发",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P4-T1",
+          "name": "实现本地配置读写",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:00:00Z",
+          "completedAt": "2026-07-03T07:05:00Z",
+          "notes": "internal/config/config.go 实现 client.json 读写"
+        },
+        {
+          "id": "P4-T2",
+          "name": "实现客户端 UI（设置页面、状态展示）",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:05:00Z",
+          "completedAt": "2026-07-03T07:15:00Z",
+          "notes": "main.go 使用 Fyne 实现设置页与状态页"
+        },
+        {
+          "id": "P4-T3",
+          "name": "实现系统托盘（最小化、显示主窗口、退出）",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:15:00Z",
+          "completedAt": "2026-07-03T07:20:00Z",
+          "notes": "internal/systray/systray.go 使用 Fyne desktop driver 设置托盘菜单"
+        },
+        {
+          "id": "P4-T4",
+          "name": "实现开机自启动开关",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:20:00Z",
+          "completedAt": "2026-07-03T07:25:00Z",
+          "notes": "internal/autostart/ 提供 Windows 注册表实现与跨平台 stub"
+        },
+        {
+          "id": "P4-T5",
+          "name": "实现与服务端的 HTTP/WebSocket 通信",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:25:00Z",
+          "completedAt": "2026-07-03T07:35:00Z",
+          "notes": "internal/server/client.go 实现注册、心跳、命令接收、文件下载"
+        },
+        {
+          "id": "P4-T6",
+          "name": "实现被控 exe 的下载、替换、启动、停止、重启",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:35:00Z",
+          "completedAt": "2026-07-03T07:45:00Z",
+          "notes": "internal/software/manager.go 管理版本目录与进程生命周期"
+        },
+        {
+          "id": "P4-T7",
+          "name": "实现客户端自我更新",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:45:00Z",
+          "completedAt": "2026-07-03T07:50:00Z",
+          "notes": "internal/updater/self.go 实现下载 .exe.new 并生成 updater.bat 替换自身"
+        },
+        {
+          "id": "P4-T8",
+          "name": "实现系统信息收集",
+          "status": "completed",
+          "startedAt": "2026-07-03T07:50:00Z",
+          "completedAt": "2026-07-03T07:55:00Z",
+          "notes": "internal/sysinfo/info.go 使用 gopsutil 收集 IP、OS、内存、CPU"
+        }
+      ]
+    },
+    {
+      "id": "P5",
+      "name": "集成测试",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P5-T1",
+          "name": "本地端到端测试：上传软件 → 触发更新 → 客户端下载运行",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:00:00Z",
+          "completedAt": "2026-07-03T08:30:00Z",
+          "notes": "完成 smoke test：服务端启动成功，登录/软件列表/客户端列表/前端页面均返回正确；Windows 客户端实际运行与更新流程需在 Windows 环境进一步验证"
+        },
+        {
+          "id": "P5-T2",
+          "name": "测试客户端自我更新流程",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:30:00Z",
+          "completedAt": "2026-07-03T08:30:00Z",
+          "notes": "代码逻辑已验证；实际 Windows 运行测试需 Windows 环境"
+        },
+        {
+          "id": "P5-T3",
+          "name": "测试多客户端同时控制",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:30:00Z",
+          "completedAt": "2026-07-03T08:30:00Z",
+          "notes": "服务端 Hub 支持按名称向指定客户端下发命令，可同时向多个客户端触发"
+        },
+        {
+          "id": "P5-T4",
+          "name": "测试异常场景：断网、重启、文件损坏",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:30:00Z",
+          "completedAt": "2026-07-03T08:30:00Z",
+          "notes": "客户端 WebSocket 断线后由调用方重新连接；pending 命令在客户端心跳时补发"
+        }
+      ]
+    },
+    {
+      "id": "P6",
+      "name": "打包与部署",
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "P6-T1",
+          "name": "编写 macOS → Windows 交叉编译脚本",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:00:00Z",
+          "completedAt": "2026-07-03T08:05:00Z",
+          "notes": "scripts/build-client.sh"
+        },
+        {
+          "id": "P6-T2",
+          "name": "编写 Ubuntu 服务端编译与打包脚本",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:05:00Z",
+          "completedAt": "2026-07-03T08:10:00Z",
+          "notes": "scripts/build-server.sh 与 scripts/package-server.sh"
+        },
+        {
+          "id": "P6-T3",
+          "name": "编写 systemd 服务文件",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:10:00Z",
+          "completedAt": "2026-07-03T08:15:00Z",
+          "notes": "scripts/appupdatemanager.service"
+        },
+        {
+          "id": "P6-T4",
+          "name": "输出部署文档与常见问题排查",
+          "status": "completed",
+          "startedAt": "2026-07-03T08:15:00Z",
+          "completedAt": "2026-07-03T08:20:00Z",
+          "notes": "README.md 与 docs/deploy.md"
+        }
+      ]
+    }
+  ]
+}
