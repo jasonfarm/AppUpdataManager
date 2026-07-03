@@ -118,7 +118,8 @@ go test ./...
 
 ### Client (`client`)
 
-- **`main.go`** — Fyne app lifecycle: load config, embed `assets/icon.svg` for the app/window icon and `assets/icon.ico` for the system-tray icon, build settings/status tabs, create the server client, set up system tray, start heartbeat/status updater, auto-connect to server. `assets/icon.ico` is also compiled into the Windows executable resource via `windres`.
+- **`main.go`** — Fyne app lifecycle: load config, embed `assets/icon.svg` for the app/window icon and `assets/icon.ico` for the system-tray icon, build settings/status tabs, create the server client, set up system tray, start heartbeat/status updater, auto-connect to server. On startup it also enforces a single instance via a Windows named mutex and centers the window on screen. `assets/icon.ico` is also compiled into the Windows executable resource via `windres`.
+- **`internal/winutil/winutil_windows.go`** — Windows-specific helpers: single-instance guard using a named mutex, bring existing window to foreground, and center the window on the primary screen.
 - **`internal/config/config.go`** — local JSON config stored in the OS user config dir (`appUpdateManager/client.json`). Fields: server host/port, client name/version, autostart flag.
 - **`internal/server/client.go`** — WebSocket client: connect, register by name, heartbeat loop, read loop, download files via HTTP.
 - **`internal/software/manager.go`** — manages `software/` subdirectory per version, starts/stops/restarts the managed executable, tracks runtime.

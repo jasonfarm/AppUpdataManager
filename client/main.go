@@ -9,6 +9,7 @@ import (
 	"example.com/appupdatemanager/client/internal/sysinfo"
 	"example.com/appupdatemanager/client/internal/systray"
 	"example.com/appupdatemanager/client/internal/updater"
+	"example.com/appupdatemanager/client/internal/winutil"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,9 @@ import (
 
 const appName = "appUpdateManagerClient"
 
+// windowTitle 是客户端主窗口标题，也用于查找已有窗口。
+const windowTitle = "AppUpdateManager 客户端"
+
 // iconSVGBytes 是内嵌的 SVG 图标数据，用于设置应用图标。
 //
 //go:embed assets/icon.svg
@@ -35,6 +39,11 @@ var iconICOBytes []byte
 
 // main 是客户端应用的入口函数，负责加载配置、构建 UI、连接服务器并运行主循环。
 func main() {
+	// 单实例检查：若已有实例运行，则将其窗口置前并退出当前进程。
+	if !winutil.EnsureSingleInstance(appName, windowTitle) {
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config error: %v\n", err)
@@ -45,8 +54,13 @@ func main() {
 	appIcon := fyne.NewStaticResource("icon.svg", iconSVGBytes)
 	a.SetIcon(appIcon)
 	trayIcon := fyne.NewStaticResource("icon.ico", iconICOBytes)
-	w := a.NewWindow("AppUpdateManager 客户端")
+	w := a.NewWindow(windowTitle)
 	w.Resize(fyne.NewSize(600, 500))
+
+	// 应用启动后将窗口居中显示
+	a.Lifecycle().SetOnStarted(func() {
+		winutil.CenterWindow(windowTitle)
+	})
 
 	sysInfo, err := sysinfo.Collect()
 	if err != nil {
