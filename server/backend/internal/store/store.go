@@ -5,6 +5,7 @@ import (
 	"example.com/appupdatemanager/server/internal/model"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS clients (
     cpu TEXT,
     process_runtime INTEGER DEFAULT 0,
     last_seen DATETIME,
+    online_since DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -345,41 +347,56 @@ func UpdateResourcePackageName(db *DB, id int64, name string) error {
 // --- Clients ---
 
 // UpsertClient 根据客户端名称插入或更新客户端记录，存在时更新状态与版本等信息。
+// 如果客户端从离线状态恢复在线，会自动重置 online_since 为当前时间。
 func UpsertClient(db *DB, c *model.Client) error {
-	row := db.QueryRow(`SELECT id FROM clients WHERE name = ?`, c.Name)
+	row := db.QueryRow(`SELECT id, last_seen, online_since FROM clients WHERE name = ?`, c.Name)
 	var id int64
-	if err := row.Scan(&id); err == sql.ErrNoRows {
-		res, err := db.Exec(
-			`INSERT INTO clients (name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.Name, c.ClientVersion, c.SoftwareVersion, c.Status, boolToInt(c.IsRunning),
-			c.IP, c.OSVersion, c.Memory, c.CPU, c.ProcessRuntime, c.LastSeen,
-		)
-		if err != nil {
-			return err
+	var lastSeen, onlineSince sql.NullTime
+	err := row.Scan(&id, &lastSeen, &onlineSince)
+
+	now := time.Now()
+	onlineThreshold := 35 * time.Second
+
+	if err == nil {
+		// 已有记录：判断是否由离线恢复在线
+		if lastSeen.Valid && now.Sub(lastSeen.Time) > onlineThreshold {
+			onlineSince = sql.NullTime{Time: now, Valid: true}
 		}
-		c.ID, _ = res.LastInsertId()
-		return nil
-	} else if err != nil {
+		c.ID = id
+		c.OnlineSince = onlineSince.Time
+		_, err := db.Exec(
+			`UPDATE clients SET client_version=?, software_version=?, status=?, is_running=?, ip=?, os_version=?, memory=?, cpu=?, process_runtime=?, last_seen=?, online_since=?
+			 WHERE id=?`,
+			c.ClientVersion, c.SoftwareVersion, c.Status, boolToInt(c.IsRunning),
+			c.IP, c.OSVersion, c.Memory, c.CPU, c.ProcessRuntime, now, onlineSince.Time, c.ID,
+		)
+		return err
+	} else if err != sql.ErrNoRows {
 		return err
 	}
-	c.ID = id
-	_, err := db.Exec(
-		`UPDATE clients SET client_version=?, software_version=?, status=?, is_running=?, ip=?, os_version=?, memory=?, cpu=?, process_runtime=?, last_seen=?
-		 WHERE id=?`,
-		c.ClientVersion, c.SoftwareVersion, c.Status, boolToInt(c.IsRunning),
-		c.IP, c.OSVersion, c.Memory, c.CPU, c.ProcessRuntime, c.LastSeen, c.ID,
+
+	// 新记录：上线时间设为当前
+	c.OnlineSince = now
+	res, err := db.Exec(
+		`INSERT INTO clients (name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, c.ClientVersion, c.SoftwareVersion, c.Status, boolToInt(c.IsRunning),
+		c.IP, c.OSVersion, c.Memory, c.CPU, c.ProcessRuntime, now, now,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	c.ID, _ = res.LastInsertId()
+	return nil
 }
 
 // GetClient 根据 id 查询单个客户端。
 func GetClient(db *DB, id int64) (*model.Client, error) {
-	row := db.QueryRow(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, created_at FROM clients WHERE id = ?`, id)
+	row := db.QueryRow(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since, created_at FROM clients WHERE id = ?`, id)
 	c := &model.Client{}
 	var isRunning int
 	err := row.Scan(&c.ID, &c.Name, &c.ClientVersion, &c.SoftwareVersion, &c.Status, &isRunning,
-		&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.CreatedAt)
+		&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.OnlineSince, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +406,7 @@ func GetClient(db *DB, id int64) (*model.Client, error) {
 
 // ListClients 按最近心跳时间降序返回所有客户端。
 func ListClients(db *DB) ([]model.Client, error) {
-	rows, err := db.Query(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, created_at FROM clients ORDER BY last_seen DESC`)
+	rows, err := db.Query(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since, created_at FROM clients ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +417,7 @@ func ListClients(db *DB) ([]model.Client, error) {
 		var c model.Client
 		var isRunning int
 		if err := rows.Scan(&c.ID, &c.Name, &c.ClientVersion, &c.SoftwareVersion, &c.Status, &isRunning,
-			&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.CreatedAt); err != nil {
+			&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.OnlineSince, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		c.IsRunning = isRunning == 1
@@ -462,12 +479,12 @@ func boolToInt(b bool) int {
 
 // GetClientByName 根据名称查询单个客户端。
 func GetClientByName(db *DB, name string) (*model.Client, error) {
-	row := db.QueryRow(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, created_at FROM clients WHERE name = ?`, name)
+	row := db.QueryRow(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since, created_at FROM clients WHERE name = ?`, name)
 	c := &model.Client{}
 	var isRunning int
 	err := row.Scan(
 		&c.ID, &c.Name, &c.ClientVersion, &c.SoftwareVersion, &c.Status, &isRunning,
-		&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.CreatedAt)
+		&c.IP, &c.OSVersion, &c.Memory, &c.CPU, &c.ProcessRuntime, &c.LastSeen, &c.OnlineSince, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +495,12 @@ func GetClientByName(db *DB, name string) (*model.Client, error) {
 // UpdateClientName 更新指定客户端的显示名称。
 func UpdateClientName(db *DB, id int64, name string) error {
 	_, err := db.Exec(`UPDATE clients SET name = ? WHERE id = ?`, name, id)
+	return err
+}
+
+// DeleteClient 删除指定 id 的客户端记录。
+func DeleteClient(db *DB, id int64) error {
+	_, err := db.Exec(`DELETE FROM clients WHERE id = ?`, id)
 	return err
 }
 

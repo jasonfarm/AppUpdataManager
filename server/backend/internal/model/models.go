@@ -92,6 +92,8 @@ type Client struct {
 	ProcessRuntime int64 `json:"process_runtime"`
 	// LastSeen 最近一次心跳时间。
 	LastSeen time.Time `json:"last_seen"`
+	// OnlineSince 最近一次上线时间，用于计算在线时长。
+	OnlineSince time.Time `json:"online_since"`
 	// CreatedAt 客户端首次注册时间。
 	CreatedAt time.Time `json:"created_at"`
 }

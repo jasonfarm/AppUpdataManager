@@ -1,9 +1,10 @@
 package ws
 
 import (
+	"encoding/json"
 	"example.com/appupdatemanager/server/internal/model"
 	"example.com/appupdatemanager/server/internal/store"
-	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -34,17 +35,17 @@ type ClientConn struct {
 // Hub 维护所有活跃的客户端 WebSocket 连接，并负责注册、注销与广播。
 type Hub struct {
 	// clients 以客户端名称为键保存所有连接。
-	clients    map[string]*ClientConn
+	clients map[string]*ClientConn
 	// register 用于接收新连接注册请求的通道。
-	register   chan *ClientConn
+	register chan *ClientConn
 	// unregister 用于接收连接注销请求的通道。
 	unregister chan *ClientConn
 	// broadcast 用于向所有客户端广播消息的通道。
-	broadcast  chan []byte
+	broadcast chan []byte
 	// db 是数据库连接，用于持久化客户端状态与命令。
-	db         *store.DB
+	db *store.DB
 	// mu 保护 clients 的读写并发安全。
-	mu         sync.RWMutex
+	mu sync.RWMutex
 }
 
 // NewHub 创建一个 Hub 实例，需传入数据库连接以持久化客户端信息。
@@ -180,10 +181,33 @@ func handleClientMessage(c *ClientConn, data []byte) {
 		var payload map[string]string
 		payloadBytes, _ := json.Marshal(msg.Data)
 		json.Unmarshal(payloadBytes, &payload)
-		c.Name = payload["name"]
-		if c.Name == "" {
-			c.Name = "unknown"
+		name := payload["name"]
+		if name == "" {
+			name = "unknown"
 		}
+
+		// 如果名称与当前在线客户端重名，自动生成一个唯一名称并通过 update_name 命令通知客户端。
+		c.Hub.mu.RLock()
+		_, exists := c.Hub.clients[name]
+		c.Hub.mu.RUnlock()
+		if exists {
+			newName := uniqueClientName(name, c.Hub)
+			cmdPayload := model.CommandPayload{
+				Command: "update_name",
+				Version: newName,
+			}
+			cmdMsg := model.WSMessage{Type: "command", Data: cmdPayload}
+			cmdBytes, _ := json.Marshal(cmdMsg)
+			select {
+			case c.Send <- cmdBytes:
+				log.Printf("client name conflict, renamed %s -> %s", name, newName)
+			default:
+				log.Printf("failed to send rename command to %s", name)
+			}
+			name = newName
+		}
+
+		c.Name = name
 		c.Hub.register <- c
 	case "heartbeat":
 		var hb model.HeartbeatData
@@ -196,8 +220,13 @@ func handleClientMessage(c *ClientConn, data []byte) {
 			c.Name = hb.Name
 			c.Hub.register <- c
 		}
+		// 使用服务端记录的名称（可能因重名被自动修改过），避免产生重复记录。
+		dbName := c.Name
+		if dbName == "" {
+			dbName = hb.Name
+		}
 		client := &model.Client{
-			Name:            hb.Name,
+			Name:            dbName,
 			ClientVersion:   hb.ClientVersion,
 			SoftwareVersion: hb.SoftwareVersion,
 			Status:          "online",
@@ -226,5 +255,27 @@ func handleClientMessage(c *ClientConn, data []byte) {
 		}
 	default:
 		log.Printf("unknown message type: %s", msg.Type)
+	}
+}
+
+// uniqueClientName 生成一个不与当前在线客户端及数据库中已有记录冲突的唯一名称。
+func uniqueClientName(base string, h *Hub) string {
+	name := base
+	suffix := 2
+	for {
+		h.mu.RLock()
+		_, existsOnline := h.clients[name]
+		h.mu.RUnlock()
+		if !existsOnline {
+			_, err := store.GetClientByName(h.db, name)
+			if err != nil {
+				return name
+			}
+		}
+		name = fmt.Sprintf("%s-%d", base, suffix)
+		suffix++
+		if suffix > 1000 {
+			return fmt.Sprintf("%s-%d", base, time.Now().Unix())
+		}
 	}
 }

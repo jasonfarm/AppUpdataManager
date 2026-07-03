@@ -155,8 +155,8 @@ func UpdateClientResource(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 	}
 }
 
-// UpdateClientName 更新指定客户端的显示名称。
-func UpdateClientName(db *store.DB) gin.HandlerFunc {
+// UpdateClientName 更新指定客户端的显示名称，并向在线客户端下发名称更新命令。
+func UpdateClientName(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 		if err != nil {
@@ -170,7 +170,47 @@ func UpdateClientName(db *store.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		client, err := store.GetClient(db, id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "client not found"})
+			return
+		}
+
+		// 下发名称更新命令时使用旧名称路由，客户端收到后更新本地配置。
+		payload := model.CommandPayload{
+			Command: "update_name",
+			Version: req.Name,
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		cmd := &model.ClientCommand{
+			ClientID:    client.ID,
+			CommandType: payload.Command,
+			Payload:     string(payloadBytes),
+			Status:      "pending",
+		}
+		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		hub.SendToClient(client.Name, payload)
+
 		if err := store.UpdateClientName(db, id, req.Name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
+// DeleteClient 删除指定 id 的客户端记录。
+func DeleteClient(db *store.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		if err := store.DeleteClient(db, id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

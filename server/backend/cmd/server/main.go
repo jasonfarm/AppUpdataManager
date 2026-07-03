@@ -83,7 +83,8 @@ func main() {
 		apiGroup.POST("/clients/:id/start", middleware.Auth(cfg), api.StartClientSoftware(hub, db))
 		apiGroup.POST("/clients/:id/stop", middleware.Auth(cfg), api.StopClientSoftware(hub, db))
 		apiGroup.POST("/clients/:id/restart", middleware.Auth(cfg), api.RestartClientSoftware(hub, db))
-		apiGroup.PUT("/clients/:id/name", middleware.Auth(cfg), api.UpdateClientName(db))
+		apiGroup.PUT("/clients/:id/name", middleware.Auth(cfg), api.UpdateClientName(hub, db))
+		apiGroup.DELETE("/clients/:id", middleware.Auth(cfg), api.DeleteClient(db))
 	}
 
 	// Serve frontend static files (production build)
