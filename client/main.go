@@ -39,7 +39,7 @@ var iconICOBytes []byte
 
 // main 是客户端应用的入口函数，负责加载配置、构建 UI、连接服务器并运行主循环。
 func main() {
-	// 单实例检查：若已有实例运行，则将其窗口置前并退出当前进程。
+	// 单实例检查：若已有实例运行，则向其窗口发送显示消息并退出当前进程。
 	if !winutil.EnsureSingleInstance(appName, windowTitle) {
 		return
 	}
@@ -54,8 +54,24 @@ func main() {
 	appIcon := fyne.NewStaticResource("icon.svg", iconSVGBytes)
 	a.SetIcon(appIcon)
 	trayIcon := fyne.NewStaticResource("icon.ico", iconICOBytes)
+	var mainWindow fyne.Window
 	w := a.NewWindow(windowTitle)
+	mainWindow = w
 	w.Resize(fyne.NewSize(600, 500))
+
+	// 注册显示窗口回调并子类化 WNDPROC，让重复运行实例可以通过窗口消息
+	// 在主消息线程中触发 w.Show()，避免空白窗口。
+	winutil.RegisterShowWindowCallback(func() {
+		mainWindow.Show()
+	})
+	go func() {
+		for i := 0; i < 200; i++ {
+			if err := winutil.SubclassWindow(windowTitle); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 
 	// 应用启动后将窗口居中显示
 	a.Lifecycle().SetOnStarted(func() {
