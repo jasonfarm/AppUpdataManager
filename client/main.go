@@ -6,6 +6,7 @@ import (
 	"example.com/appupdatemanager/client/internal/config"
 	"example.com/appupdatemanager/client/internal/logger"
 	"example.com/appupdatemanager/client/internal/server"
+	"example.com/appupdatemanager/client/internal/shortcut"
 	"example.com/appupdatemanager/client/internal/software"
 	"example.com/appupdatemanager/client/internal/sysinfo"
 	"example.com/appupdatemanager/client/internal/systray"
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -66,6 +68,7 @@ func main() {
 		appLogger = nil
 	} else {
 		defer appLogger.Close()
+		appLogger.SetMaxEntries(cfg.MaxLogLines)
 		appLogger.Infof("客户端启动，日志文件: %s", logFilePath)
 	}
 
@@ -107,24 +110,33 @@ func main() {
 
 	swManager := software.NewManager(filepath.Join(config.Dir(), "software"))
 
-	// Server client
+	// Server client 声明提前，便于信息栏闭包引用。
 	var srvClient *server.Client
-	commandHandler := func(cmd string, payload map[string]string) {
-		handleCommand(cfg, swManager, appLogger, cmd, payload)
-	}
-	srvClient = server.NewClient(cfg, appLogger, commandHandler)
 
 	// 顶部信息栏：使用数据绑定实现跨 goroutine 安全更新
 	infoBinding := binding.NewString()
 	updateInfoLabel := func() {
-		_ = infoBinding.Set(fmt.Sprintf("AppUpdateManager 客户端 v%s | 客户端: %s | 服务器: %s:%s | 状态: %s",
+		server := cfg.CurrentServer()
+		_ = infoBinding.Set(fmt.Sprintf("AppUpdateManager 客户端 v%s | 客户端: %s | 服务器: %s (%s:%s) | 状态: %s",
 			cfg.ClientVersion,
 			cfg.ClientName,
-			cfg.ServerHost,
-			cfg.ServerPort,
+			server.Name,
+			server.Host,
+			server.Port,
 			connectionStatus(srvClient),
 		))
 	}
+
+	commandHandler := func(cmd string, payload map[string]string) {
+		feedback := func(status string, progress int, speed, message string) {
+			if id := payload["command_id"]; id != "" && srvClient != nil {
+				_ = srvClient.SendCommandFeedback(id, status, progress, speed, message)
+			}
+		}
+		handleCommand(cfg, swManager, appLogger, updateInfoLabel, feedback, cmd, payload)
+	}
+	srvClient = server.NewClient(cfg, appLogger, commandHandler)
+
 	infoLabel := widget.NewLabelWithData(infoBinding)
 	updateInfoLabel()
 
@@ -138,7 +150,7 @@ func main() {
 
 	// 底部按钮栏：左下角设置，右下角关于
 	settingsBtn := widget.NewButton("设置", func() {
-		showSettingsDialog(w, cfg, appLogger, updateInfoLabel)
+		showSettingsDialog(w, cfg, appLogger, updateInfoLabel, srvClient, sysInfo)
 	})
 	aboutBtn := widget.NewButton("关于", func() {
 		showAboutDialog(w, cfg, sysInfo)
@@ -175,7 +187,7 @@ func main() {
 		}
 	}()
 
-	// 自动连接服务器
+	// 自动连接服务器（Run 内部会处理断线重连）
 	go func() {
 		time.Sleep(1 * time.Second)
 		hb := &server.HeartbeatData{
@@ -184,11 +196,7 @@ func main() {
 			Memory:    sysInfo.Memory,
 			CPU:       sysInfo.CPU,
 		}
-		if err := srvClient.Connect(hb); err != nil {
-			if appLogger != nil {
-				appLogger.Errorf("自动连接服务器失败: %v", err)
-			}
-		}
+		srvClient.Run(hb)
 	}()
 
 	if *autostartMode {
@@ -201,37 +209,127 @@ func main() {
 	}
 }
 
-// showSettingsDialog 弹出设置对话框，保存成功后更新顶部信息栏。
-func showSettingsDialog(parent fyne.Window, cfg *config.Config, appLogger *logger.Logger, updateInfoLabel func()) {
+// showSettingsDialog 弹出设置对话框，支持选择/保存服务器配置、客户端名称、开机自启动和日志最大行数。
+func showSettingsDialog(parent fyne.Window, cfg *config.Config, appLogger *logger.Logger, updateInfoLabel func(), srvClient *server.Client, sysInfo *sysinfo.Info) {
+	servers := make([]config.ServerProfile, len(cfg.Servers))
+	copy(servers, cfg.Servers)
+	if len(servers) == 0 {
+		servers = append(servers, config.ServerProfile{
+			Name: "默认服务器",
+			Host: cfg.ServerHost,
+			Port: cfg.ServerPort,
+		})
+	}
+
+	current := servers[cfg.SelectedServer]
+	if cfg.SelectedServer < 0 || cfg.SelectedServer >= len(servers) {
+		current = servers[0]
+	}
+
+	serverNameEntry := widget.NewEntry()
+	serverNameEntry.SetText(current.Name)
+	serverNameEntry.SetPlaceHolder("如：测试服务器")
+
 	serverHostEntry := widget.NewEntry()
-	serverHostEntry.SetText(cfg.ServerHost)
+	serverHostEntry.SetText(current.Host)
+	serverHostEntry.SetPlaceHolder("127.0.0.1")
+
 	serverPortEntry := widget.NewEntry()
-	serverPortEntry.SetText(cfg.ServerPort)
+	serverPortEntry.SetText(current.Port)
+	serverPortEntry.SetPlaceHolder("8080")
+
+	profileNames := make([]string, len(servers))
+	for i, p := range servers {
+		profileNames[i] = p.Name
+	}
+	profileSelect := widget.NewSelect(profileNames, nil)
+	profileSelect.SetSelected(current.Name)
+
+	profileSelect.OnChanged = func(name string) {
+		for _, p := range servers {
+			if p.Name == name {
+				serverNameEntry.SetText(p.Name)
+				serverHostEntry.SetText(p.Host)
+				serverPortEntry.SetText(p.Port)
+				break
+			}
+		}
+	}
+
 	clientNameEntry := widget.NewEntry()
 	clientNameEntry.SetText(cfg.ClientName)
+
 	versionEntry := widget.NewEntry()
 	versionEntry.SetText(cfg.ClientVersion)
 	versionEntry.Disable()
+
 	autoStartCheck := widget.NewCheck("开机自启动", nil)
 	autoStartCheck.SetChecked(autostart.IsEnabled(appName))
 
-	form := widget.NewForm(
+	maxLogLinesEntry := widget.NewEntry()
+	maxLogLinesEntry.SetText(fmt.Sprintf("%d", cfg.MaxLogLines))
+
+	serverForm := widget.NewForm(
+		widget.NewFormItem("选择配置", profileSelect),
+		widget.NewFormItem("配置名称", serverNameEntry),
 		widget.NewFormItem("服务器地址", serverHostEntry),
 		widget.NewFormItem("端口", serverPortEntry),
+	)
+	serverCard := widget.NewCard("服务器配置", "选择历史配置或输入新名称保存", serverForm)
+
+	generalForm := widget.NewForm(
 		widget.NewFormItem("客户端名称", clientNameEntry),
 		widget.NewFormItem("客户端版本", versionEntry),
+		widget.NewFormItem("日志最大行数", maxLogLinesEntry),
 	)
+	generalCard := widget.NewCard("常规设置", "", container.NewVBox(generalForm, container.NewHBox(layout.NewSpacer(), autoStartCheck)))
 
-	content := container.NewVBox(form, autoStartCheck)
+	content := container.NewVBox(serverCard, generalCard)
 
 	d := dialog.NewCustomConfirm("设置", "保存", "取消", content, func(confirmed bool) {
 		if !confirmed {
 			return
 		}
-		cfg.ServerHost = serverHostEntry.Text
-		cfg.ServerPort = serverPortEntry.Text
+
+		name := serverNameEntry.Text
+		host := serverHostEntry.Text
+		port := serverPortEntry.Text
+		if name == "" || host == "" || port == "" {
+			dialog.ShowInformation("提示", "服务器名称、地址和端口不能为空", parent)
+			return
+		}
+
+		maxLines := cfg.MaxLogLines
+		if v, err := strconv.Atoi(maxLogLinesEntry.Text); err == nil && v > 0 {
+			maxLines = v
+		}
+
+		oldCurrent := cfg.CurrentServer()
+		oldIndex := cfg.SelectedServer
+
+		selectedIndex := -1
+		for i, p := range servers {
+			if p.Name == name {
+				servers[i] = config.ServerProfile{Name: name, Host: host, Port: port}
+				selectedIndex = i
+				break
+			}
+		}
+		if selectedIndex < 0 {
+			servers = append(servers, config.ServerProfile{Name: name, Host: host, Port: port})
+			selectedIndex = len(servers) - 1
+		}
+
+		serverChanged := oldIndex != selectedIndex ||
+			oldCurrent.Host != host ||
+			oldCurrent.Port != port
+
+		cfg.Servers = servers
+		cfg.SelectedServer = selectedIndex
 		cfg.ClientName = clientNameEntry.Text
 		cfg.AutoStart = autoStartCheck.Checked
+		cfg.MaxLogLines = maxLines
+
 		if err := cfg.Save(); err != nil {
 			if appLogger != nil {
 				appLogger.Errorf("保存配置失败: %v", err)
@@ -246,11 +344,19 @@ func showSettingsDialog(parent fyne.Window, cfg *config.Config, appLogger *logge
 			_ = autostart.Disable(appName)
 		}
 		if appLogger != nil {
+			appLogger.SetMaxEntries(cfg.MaxLogLines)
 			appLogger.Info("配置已保存")
 		}
 		updateInfoLabel()
+
+		if serverChanged {
+			if appLogger != nil {
+				appLogger.Infof("切换服务器到: %s (%s:%s)", cfg.CurrentServer().Name, cfg.CurrentServer().Host, cfg.CurrentServer().Port)
+			}
+			reconnectServer(srvClient, cfg, sysInfo)
+		}
 	}, parent)
-	d.Resize(fyne.NewSize(420, 320))
+	d.Resize(fyne.NewSize(420, 430))
 	d.Show()
 }
 
@@ -269,16 +375,51 @@ func showAboutDialog(parent fyne.Window, cfg *config.Config, sysInfo *sysinfo.In
 
 // connectionStatus 根据客户端连接状态返回对应的中文状态描述字符串。
 func connectionStatus(c *server.Client) string {
-	if c == nil {
+	if c == nil || !c.IsConnected() {
 		return "未连接"
 	}
 	return "已连接"
 }
 
+// reconnectServer 关闭当前服务器连接并使用新配置重新连接。
+func reconnectServer(srvClient *server.Client, cfg *config.Config, sysInfo *sysinfo.Info) {
+	if srvClient == nil {
+		return
+	}
+	srvClient.SetConfig(cfg)
+	_ = srvClient.Close()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		srvClient.Reset()
+		hb := &server.HeartbeatData{
+			IP:        sysInfo.IP,
+			OSVersion: sysInfo.OSVersion,
+			Memory:    sysInfo.Memory,
+			CPU:       sysInfo.CPU,
+		}
+		srvClient.Run(hb)
+	}()
+}
+
 // handleCommand 处理服务器下发的控制命令，包括软件更新、客户端自更新、启动、停止和重启操作。
-func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger, cmd string, payload map[string]string) {
+// feedback 用于实时向服务端上报命令执行状态。
+func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger, updateInfoLabel func(), feedback func(status string, progress int, speed, message string), cmd string, payload map[string]string) {
 	if log != nil {
 		log.Infof("开始执行服务器命令: %s, 参数: %v", cmd, payload)
+	}
+	if feedback != nil {
+		feedback("received", 0, "", "")
+	}
+
+	sendCompleted := func() {
+		if feedback != nil {
+			feedback("completed", 100, "", "")
+		}
+	}
+	sendFailed := func(err error) {
+		if feedback != nil {
+			feedback("failed", 0, "", err.Error())
+		}
 	}
 
 	switch cmd {
@@ -293,10 +434,21 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 			if log != nil {
 				log.Errorf("准备软件目录失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		savePath := filepath.Join(mgr.SoftwareDir(), filename)
-		if err := server.DownloadFile(log, cfg.ServerURL(), downloadURL, savePath); err != nil {
+		err := server.DownloadFileWithProgress(log, cfg.ServerURL(), downloadURL, savePath, func(downloaded, total int64, speed string) {
+			percent := 0
+			if total > 0 {
+				percent = int(float64(downloaded) * 100 / float64(total))
+			}
+			if feedback != nil {
+				feedback("downloading", percent, speed, "")
+			}
+		})
+		if err != nil {
+			sendFailed(err)
 			return
 		}
 		_ = mgr.Stop()
@@ -304,39 +456,66 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 			if log != nil {
 				log.Errorf("启动新版本软件失败: %v", err)
 			}
+			sendFailed(err)
 			return
+		}
+		if err := shortcut.EnsureSoftwareShortcut(mgr.SoftwareDir(), filename); err != nil {
+			if log != nil {
+				log.Errorf("创建桌面快捷方式失败: %v", err)
+			}
+		}
+		if err := shortcut.RemoveOldVersionShortcuts(mgr.SoftwareDir(), filename); err != nil {
+			if log != nil {
+				log.Errorf("删除旧版本快捷方式失败: %v", err)
+			}
 		}
 		if log != nil {
 			log.Infof("软件已更新到版本 %s 并启动", version)
 		}
+		sendCompleted()
 	case "update_resource":
 		downloadURL := payload["download_url"]
 		filename := filepath.Base(downloadURL)
 		if filename == "" {
+			err := fmt.Errorf("资源包下载地址缺少文件名")
 			if log != nil {
-				log.Error("资源包下载地址缺少文件名")
+				log.Error(err.Error())
 			}
+			sendFailed(err)
 			return
 		}
 		if _, err := mgr.EnsureDir(); err != nil {
 			if log != nil {
 				log.Errorf("准备软件目录失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		savePath := filepath.Join(mgr.SoftwareDir(), filename)
-		if err := server.DownloadFile(log, cfg.ServerURL(), downloadURL, savePath); err != nil {
+		err := server.DownloadFileWithProgress(log, cfg.ServerURL(), downloadURL, savePath, func(downloaded, total int64, speed string) {
+			percent := 0
+			if total > 0 {
+				percent = int(float64(downloaded) * 100 / float64(total))
+			}
+			if feedback != nil {
+				feedback("downloading", percent, speed, "")
+			}
+		})
+		if err != nil {
+			sendFailed(err)
 			return
 		}
 		if err := software.ExtractZip(savePath, mgr.SoftwareDir()); err != nil {
 			if log != nil {
 				log.Errorf("解压资源包失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		if log != nil {
 			log.Infof("资源包 %s 已解压到 %s", filename, mgr.SoftwareDir())
 		}
+		sendCompleted()
 	case "update_self":
 		downloadURL := payload["download_url"]
 		savePath, err := updater.DownloadPath()
@@ -344,15 +523,73 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 			if log != nil {
 				log.Errorf("获取自更新下载路径失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
-		if err := server.DownloadFile(log, cfg.ServerURL(), downloadURL, savePath); err != nil {
+		err = server.DownloadFileWithProgress(log, cfg.ServerURL(), downloadURL, savePath, func(downloaded, total int64, speed string) {
+			percent := 0
+			if total > 0 {
+				percent = int(float64(downloaded) * 100 / float64(total))
+			}
+			if feedback != nil {
+				feedback("downloading", percent, speed, "")
+			}
+		})
+		if err != nil {
+			sendFailed(err)
 			return
 		}
 		if log != nil {
 			log.Info("客户端自更新文件下载完成，准备退出并替换")
 		}
+		sendCompleted()
 		_ = updater.SelfUpdate(savePath)
+	case "update_name":
+		newName := payload["version"]
+		if newName == "" {
+			err := fmt.Errorf("收到名称为空的改名命令")
+			if log != nil {
+				log.Error(err.Error())
+			}
+			sendFailed(err)
+			return
+		}
+		cfg.ClientName = newName
+		if err := cfg.Save(); err != nil {
+			if log != nil {
+				log.Errorf("保存新客户端名称失败: %v", err)
+			}
+			sendFailed(err)
+			return
+		}
+		if log != nil {
+			log.Infof("客户端名称已更新为: %s", newName)
+		}
+		updateInfoLabel()
+		latestVer := mgr.CurrentVersion()
+		filename := mgr.CurrentFilename()
+		if filename == "" {
+			var err error
+			filename, err = mgr.FindExecutableForVersion(latestVer)
+			if err != nil {
+				if log != nil {
+					log.Errorf("查找可执行文件失败: %v", err)
+				}
+				sendFailed(err)
+				return
+			}
+		}
+		if err := mgr.Start(latestVer, filename); err != nil {
+			if log != nil {
+				log.Errorf("启动软件失败: %v", err)
+			}
+			sendFailed(err)
+			return
+		}
+		if log != nil {
+			log.Info("软件已启动")
+		}
+		sendCompleted()
 	case "start":
 		latestVer := mgr.CurrentVersion()
 		filename := mgr.CurrentFilename()
@@ -363,6 +600,7 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 				if log != nil {
 					log.Errorf("查找可执行文件失败: %v", err)
 				}
+				sendFailed(err)
 				return
 			}
 		}
@@ -370,21 +608,25 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 			if log != nil {
 				log.Errorf("启动软件失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		if log != nil {
 			log.Info("软件已启动")
 		}
+		sendCompleted()
 	case "stop":
 		if err := mgr.Stop(); err != nil {
 			if log != nil {
 				log.Errorf("停止软件失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		if log != nil {
 			log.Info("软件已停止")
 		}
+		sendCompleted()
 	case "restart":
 		latestVer := mgr.CurrentVersion()
 		filename := mgr.CurrentFilename()
@@ -395,6 +637,7 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 				if log != nil {
 					log.Errorf("查找可执行文件失败: %v", err)
 				}
+				sendFailed(err)
 				return
 			}
 		}
@@ -402,14 +645,17 @@ func handleCommand(cfg *config.Config, mgr *software.Manager, log *logger.Logger
 			if log != nil {
 				log.Errorf("重启软件失败: %v", err)
 			}
+			sendFailed(err)
 			return
 		}
 		if log != nil {
 			log.Info("软件已重启")
 		}
+		sendCompleted()
 	default:
 		if log != nil {
 			log.Warnf("未知的服务器命令: %s", cmd)
 		}
+		sendFailed(fmt.Errorf("未知命令: %s", cmd))
 	}
 }

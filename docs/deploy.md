@@ -15,7 +15,17 @@ sudo apt install -y golang-go nodejs npm build-essential
 ./scripts/build-server.sh
 ```
 
+构建完成后，`dist/server/` 目录应包含：
+
+- `appUpdateManager-server` — 后端可执行文件
+- `accounts.txt` — 账号密码配置文件
+- `static/index.html` 与 `static/assets/*` — Web 控制台静态资源
+
+> 如果 `dist/server/static/index.html` 缺失，部署后访问控制台会出现 404。
+
 ### 3. 安装
+
+#### 方式一：手动安装到 /opt/appupdatemanager
 
 ```bash
 sudo mkdir -p /opt/appupdatemanager
@@ -26,6 +36,20 @@ sudo mkdir -p /opt/appupdatemanager/data
 sudo useradd -r -s /bin/false appupdate || true
 sudo chown -R appupdate:appupdate /opt/appupdatemanager
 ```
+
+#### 方式二：使用一键部署脚本
+
+```bash
+./scripts/deploy-server.sh --restart
+```
+
+默认部署到 `/home/th/work_dir/appupdatemanager`，可通过环境变量修改：
+
+```bash
+DEPLOY_REMOTE_DIR=/opt/appupdatemanager ./scripts/deploy-server.sh --restart
+```
+
+> 注意：`scripts/appupdatemanager.service` 中的 `WorkingDirectory` 必须与部署目录一致；否则即使文件已同步，systemd 服务仍会从旧目录启动，导致 404。
 
 ### 4. 配置 systemd
 
@@ -93,7 +117,13 @@ brew install mingw-w64
 - 检查目标目录是否有写入权限。
 - 查看 `updater.bat` 是否成功生成。
 
-### 前端页面空白
+### 前端页面空白或返回 404
 
 - 确认已执行 `npm run build` 生成 `static` 目录。
 - 检查后端是否正确配置了静态文件服务。
+- 若使用 `deploy-server.sh` 部署，确认 `scripts/appupdatemanager.service` 中的 `WorkingDirectory` 与实际部署目录一致。
+- 在服务器上检查 `static/index.html` 是否存在：
+
+  ```bash
+  ls -la <部署目录>/static/index.html
+  ```

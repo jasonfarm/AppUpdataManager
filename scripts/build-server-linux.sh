@@ -10,6 +10,12 @@ npm run build
 
 echo "==> Building server backend..."
 cd ../backend
+
+# 交叉编译配置：Linux AMD64
+export GOOS=linux
+export GOARCH=amd64
+export CGO_ENABLED=0  # 禁用 CGO，避免依赖 macOS 的 C 库
+
 GOPROXY=https://proxy.golang.org go mod tidy
 GOPROXY=https://proxy.golang.org go build -o ../../dist/server/appUpdateManager-server ./cmd/server
 

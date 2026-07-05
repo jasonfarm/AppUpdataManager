@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // State 记录当前运行或最后一次启动的软件版本与对应文件名，用于程序重启后恢复。
@@ -53,13 +55,17 @@ func (m *Manager) CurrentFilename() string {
 }
 
 // IsRunning 返回当前管理的软件进程是否正在运行。
+// 除了检查 exec.Cmd 句柄，还通过进程 ID 二次验证，防止进程被外部杀死后句柄失效。
 func (m *Manager) IsRunning() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.cmd == nil || m.cmd.Process == nil {
 		return false
 	}
-	return m.cmd.ProcessState == nil || !m.cmd.ProcessState.Exited()
+	if m.cmd.ProcessState != nil && m.cmd.ProcessState.Exited() {
+		return false
+	}
+	return isProcessAlive(m.cmd.Process.Pid)
 }
 
 // Runtime 返回当前软件进程已运行的秒数，如果未启动则返回 0。
@@ -73,16 +79,29 @@ func (m *Manager) Runtime() int64 {
 }
 
 // Start 在软件目录下启动指定的可执行文件，并记录版本、路径和启动时间。
+// 若已存在同名或同路径的残留进程，会先尝试终止，避免启动失败。
 func (m *Manager) Start(version, filename string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cmd != nil && m.cmd.Process != nil && m.cmd.ProcessState == nil {
-		return fmt.Errorf("software already running")
-	}
+
 	execPath := filepath.Join(m.softwareDir, filename)
 	if _, err := os.Stat(execPath); os.IsNotExist(err) {
 		return fmt.Errorf("executable not found: %s", execPath)
 	}
+
+	// 如果当前句柄对应的进程仍在运行，则无需重复启动。
+	if m.cmd != nil && m.cmd.Process != nil && m.cmd.ProcessState == nil {
+		if isProcessAlive(m.cmd.Process.Pid) {
+			return fmt.Errorf("software already running")
+		}
+		// 句柄已失效，清理残留。
+		m.cmd = nil
+		m.startTime = time.Time{}
+	}
+
+	// 按可执行文件路径清理外部残留的同名进程。
+	_ = terminateProcessesByPath(execPath)
+
 	m.execPath = execPath
 	m.currentVer = version
 	m.currentFilename = filename
@@ -98,18 +117,21 @@ func (m *Manager) Start(version, filename string) error {
 }
 
 // Stop 停止当前正在运行的软件进程，并清理相关状态。
+// 如果 exec.Cmd 句柄已失效（例如用户手动结束进程），会额外按文件路径查找并终止残留进程。
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cmd == nil || m.cmd.Process == nil {
-		return nil
+	if m.cmd != nil && m.cmd.Process != nil {
+		if m.cmd.ProcessState == nil || !m.cmd.ProcessState.Exited() {
+			_ = m.cmd.Process.Kill()
+			_, _ = m.cmd.Process.Wait()
+		}
+		m.cmd = nil
+		m.startTime = time.Time{}
 	}
-	if err := m.cmd.Process.Kill(); err != nil {
-		return err
+	if m.execPath != "" {
+		_ = terminateProcessesByPath(m.execPath)
 	}
-	_, _ = m.cmd.Process.Wait()
-	m.cmd = nil
-	m.startTime = time.Time{}
 	return nil
 }
 
@@ -209,4 +231,35 @@ func (m *Manager) FindExecutableForVersion(version string) (string, error) {
 		return firstExe, nil
 	}
 	return "", fmt.Errorf("no executable found in %s", m.softwareDir)
+}
+
+// isProcessAlive 通过 gopsutil 检查指定 PID 的进程是否仍在运行。
+func isProcessAlive(pid int) bool {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return false
+	}
+	running, err := p.IsRunning()
+	if err != nil {
+		return false
+	}
+	return running
+}
+
+// terminateProcessesByPath 按可执行文件完整路径查找并终止所有匹配进程。
+func terminateProcessesByPath(targetPath string) error {
+	procs, err := process.Processes()
+	if err != nil {
+		return err
+	}
+	for _, p := range procs {
+		exe, err := p.Exe()
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(exe, targetPath) {
+			_ = p.Terminate()
+		}
+	}
+	return nil
 }

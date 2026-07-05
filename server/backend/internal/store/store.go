@@ -3,11 +3,12 @@ package store
 import (
 	"database/sql"
 	"example.com/appupdatemanager/server/internal/model"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // DB 是对标准 sql.DB 的封装，提供 SQLite 数据库访问能力。
@@ -21,14 +22,14 @@ func Open(dataDir string) (*DB, error) {
 		return nil, err
 	}
 	dbPath := filepath.Join(dataDir, "app.db")
-	sqlDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	sqlDB, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		return nil, err
 	}
 	return &DB{sqlDB}, nil
 }
 
-// Migrate 执行数据库迁移，创建所有必需的表（若不存在）。
+// Migrate 执行数据库迁移，创建所有必需的表（若不存在），并兼容旧库补全新增字段。
 func Migrate(db *DB) error {
 	schema := `
 CREATE TABLE IF NOT EXISTS users (
@@ -89,10 +90,56 @@ CREATE TABLE IF NOT EXISTS client_commands (
     command_type TEXT NOT NULL,
     payload TEXT,
     status TEXT DEFAULT 'pending',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    progress INTEGER DEFAULT 0,
+    message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
-	_, err := db.Exec(schema)
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+
+	// 兼容旧数据库：若列不存在则补全（ALTER TABLE 不支持非固定默认值）
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{"progress", "INTEGER DEFAULT 0"},
+		{"message", "TEXT"},
+		{"updated_at", "DATETIME"},
+	}
+	for _, col := range columns {
+		if err := addColumnIfNotExists(db, "client_commands", col.name, col.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addColumnIfNotExists 在指定表不存在某列时添加该列。
+func addColumnIfNotExists(db *DB, table, column, def string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def))
 	return err
 }
 
@@ -404,9 +451,9 @@ func GetClient(db *DB, id int64) (*model.Client, error) {
 	return c, nil
 }
 
-// ListClients 按最近心跳时间降序返回所有客户端。
+// ListClients 按客户端 ID 升序返回所有客户端，保证列表顺序稳定。
 func ListClients(db *DB) ([]model.Client, error) {
-	rows, err := db.Query(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since, created_at FROM clients ORDER BY last_seen DESC`)
+	rows, err := db.Query(`SELECT id, name, client_version, software_version, status, is_running, ip, os_version, memory, cpu, process_runtime, last_seen, online_since, created_at FROM clients ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -431,8 +478,8 @@ func ListClients(db *DB) ([]model.Client, error) {
 // CreateCommand 插入一条待执行的命令记录，并回填自增 ID。
 func CreateCommand(db *DB, cmd *model.ClientCommand) error {
 	res, err := db.Exec(
-		`INSERT INTO client_commands (client_id, command_type, payload, status) VALUES (?, ?, ?, ?)`,
-		cmd.ClientID, cmd.CommandType, cmd.Payload, cmd.Status,
+		`INSERT INTO client_commands (client_id, command_type, payload, status, progress, message, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		cmd.ClientID, cmd.CommandType, cmd.Payload, cmd.Status, cmd.Progress, cmd.Message, time.Now(),
 	)
 	if err != nil {
 		return err
@@ -441,10 +488,31 @@ func CreateCommand(db *DB, cmd *model.ClientCommand) error {
 	return nil
 }
 
+// UpdateCommandPayload 更新命令的 JSON 载荷，通常在创建命令并获取 ID 后回填 CommandID。
+func UpdateCommandPayload(db *DB, id int64, payload string) error {
+	_, err := db.Exec(`UPDATE client_commands SET payload = ? WHERE id = ?`, payload, id)
+	return err
+}
+
+// UpdateCommandStatus 更新指定命令的状态。
+func UpdateCommandStatus(db *DB, id int64, status string) error {
+	_, err := db.Exec(`UPDATE client_commands SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now(), id)
+	return err
+}
+
+// UpdateCommandFeedback 更新命令的反馈状态、进度与消息。
+func UpdateCommandFeedback(db *DB, id int64, status string, progress int, message string) error {
+	_, err := db.Exec(
+		`UPDATE client_commands SET status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?`,
+		status, progress, message, time.Now(), id,
+	)
+	return err
+}
+
 // ListPendingCommands 返回指定客户端所有 pending 状态的命令，按创建时间升序排列。
 func ListPendingCommands(db *DB, clientID int64) ([]model.ClientCommand, error) {
 	rows, err := db.Query(
-		`SELECT id, client_id, command_type, payload, status, created_at FROM client_commands WHERE client_id = ? AND status = 'pending' ORDER BY created_at ASC`,
+		`SELECT id, client_id, command_type, payload, status, progress, COALESCE(message, ''), created_at, updated_at FROM client_commands WHERE client_id = ? AND status = 'pending' ORDER BY created_at ASC`,
 		clientID,
 	)
 	if err != nil {
@@ -455,18 +523,69 @@ func ListPendingCommands(db *DB, clientID int64) ([]model.ClientCommand, error) 
 	list := make([]model.ClientCommand, 0)
 	for rows.Next() {
 		var c model.ClientCommand
-		if err := rows.Scan(&c.ID, &c.ClientID, &c.CommandType, &c.Payload, &c.Status, &c.CreatedAt); err != nil {
+		var updatedAt sql.NullTime
+		if err := rows.Scan(&c.ID, &c.ClientID, &c.CommandType, &c.Payload, &c.Status, &c.Progress, &c.Message, &c.CreatedAt, &updatedAt); err != nil {
 			return nil, err
+		}
+		if updatedAt.Valid {
+			c.UpdatedAt = updatedAt.Time
+		} else {
+			c.UpdatedAt = c.CreatedAt
 		}
 		list = append(list, c)
 	}
 	return list, rows.Err()
 }
 
-// UpdateCommandStatus 更新指定命令的状态。
-func UpdateCommandStatus(db *DB, id int64, status string) error {
-	_, err := db.Exec(`UPDATE client_commands SET status = ? WHERE id = ?`, status, id)
-	return err
+// GetLatestCommandByClient 返回指定客户端最新创建的一条命令。
+func GetLatestCommandByClient(db *DB, clientID int64) (*model.ClientCommand, error) {
+	row := db.QueryRow(
+		`SELECT id, client_id, command_type, payload, status, progress, COALESCE(message, ''), created_at, updated_at FROM client_commands WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+		clientID,
+	)
+	var c model.ClientCommand
+	var updatedAt sql.NullTime
+	err := row.Scan(&c.ID, &c.ClientID, &c.CommandType, &c.Payload, &c.Status, &c.Progress, &c.Message, &c.CreatedAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if updatedAt.Valid {
+		c.UpdatedAt = updatedAt.Time
+	} else {
+		c.UpdatedAt = c.CreatedAt
+	}
+	return &c, nil
+}
+
+// ListCommandsByClient 返回指定客户端最近的命令历史，按创建时间降序排列。
+func ListCommandsByClient(db *DB, clientID int64, limit int) ([]model.ClientCommand, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.Query(
+		`SELECT id, client_id, command_type, payload, status, progress, COALESCE(message, ''), created_at, updated_at FROM client_commands WHERE client_id = ? ORDER BY created_at DESC LIMIT ?`,
+		clientID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := make([]model.ClientCommand, 0)
+	for rows.Next() {
+		var c model.ClientCommand
+		var updatedAt sql.NullTime
+		if err := rows.Scan(&c.ID, &c.ClientID, &c.CommandType, &c.Payload, &c.Status, &c.Progress, &c.Message, &c.CreatedAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		if updatedAt.Valid {
+			c.UpdatedAt = updatedAt.Time
+		} else {
+			c.UpdatedAt = c.CreatedAt
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
 }
 
 // boolToInt 将布尔值转换为整数，true 为 1，false 为 0，用于 SQLite 存储。

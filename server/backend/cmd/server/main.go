@@ -77,6 +77,7 @@ func main() {
 
 		apiGroup.GET("/clients", middleware.Auth(cfg), api.ListClients(db))
 		apiGroup.GET("/clients/:id", middleware.Auth(cfg), api.GetClient(db))
+		apiGroup.GET("/clients/:id/commands", middleware.Auth(cfg), api.ListClientCommands(db))
 		apiGroup.POST("/clients/:id/update-software", middleware.Auth(cfg), api.UpdateClientSoftware(hub, db))
 		apiGroup.POST("/clients/:id/update-resource", middleware.Auth(cfg), api.UpdateClientResource(hub, db))
 		apiGroup.POST("/clients/:id/update-self", middleware.Auth(cfg), api.UpdateClientSelf(hub, db))

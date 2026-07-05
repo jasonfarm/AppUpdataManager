@@ -96,6 +96,8 @@ type Client struct {
 	OnlineSince time.Time `json:"online_since"`
 	// CreatedAt 客户端首次注册时间。
 	CreatedAt time.Time `json:"created_at"`
+	// LatestCommand 该客户端最新的命令状态，用于列表展示。
+	LatestCommand *ClientCommand `json:"latest_command,omitempty"`
 }
 
 // ClientCommand 表示服务器向客户端下发的命令。
@@ -108,10 +110,30 @@ type ClientCommand struct {
 	CommandType string `json:"command_type"`
 	// Payload 命令的 JSON 载荷。
 	Payload string `json:"payload"`
-	// Status 命令状态，如 pending、sent。
+	// Status 命令状态，如 pending、sent、received、downloading、completed、failed。
 	Status string `json:"status"`
+	// Progress 下载或执行进度，0-100。
+	Progress int `json:"progress"`
+	// Message 失败原因或额外说明。
+	Message string `json:"message"`
 	// CreatedAt 命令创建时间。
 	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt 命令最后更新时间。
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CommandFeedback 是客户端上报的命令执行反馈。
+type CommandFeedback struct {
+	// CommandID 对应的命令 ID。
+	CommandID int64 `json:"command_id"`
+	// Status 反馈状态：received、downloading、completed、failed。
+	Status string `json:"status"`
+	// Progress 下载/执行进度，0-100。
+	Progress int `json:"progress"`
+	// Speed 下载速度，人类可读字符串。
+	Speed string `json:"speed"`
+	// Message 失败原因或详细说明。
+	Message string `json:"message"`
 }
 
 // HeartbeatData 表示客户端心跳消息中上报的数据。
@@ -146,6 +168,8 @@ type WSMessage struct {
 
 // CommandPayload 是下发给客户端的命令载荷。
 type CommandPayload struct {
+	// CommandID 命令在数据库中的唯一标识，客户端反馈时回传。
+	CommandID int64 `json:"command_id,omitempty"`
 	// Command 命令类型，如 update_software、update_self、start、stop、restart。
 	Command string `json:"command"`
 	// Version 目标版本号，仅在更新类命令中使用。

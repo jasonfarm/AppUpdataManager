@@ -106,3 +106,11 @@ export function clientAction(id: number, action: string, version?: string) {
 export function updateClientName(id: number, name: string) {
   return api.put(`/clients/${id}/name`, { name })
 }
+
+export function deleteClient(id: number) {
+  return api.delete(`/clients/${id}`)
+}
+
+export function listClientCommands(id: number, limit?: number) {
+  return api.get(`/clients/${id}/commands`, { params: limit ? { limit } : {} })
+}

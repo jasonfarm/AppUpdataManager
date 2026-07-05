@@ -12,13 +12,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ListClients 返回所有已注册客户端的列表。
+// ListClients 返回所有已注册客户端的列表，并为每个客户端附带最新命令状态。
 func ListClients(db *store.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := store.ListClients(db)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		for i := range list {
+			latest, err := store.GetLatestCommandByClient(db, list[i].ID)
+			if err == nil {
+				list[i].LatestCommand = latest
+			}
 		}
 		c.JSON(http.StatusOK, list)
 	}
@@ -98,14 +104,19 @@ func UpdateClientSoftware(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 			Version:     version,
 			DownloadURL: downloadURL,
 		}
-		payloadBytes, _ := json.Marshal(payload)
 		cmd := &model.ClientCommand{
 			ClientID:    client.ID,
 			CommandType: payload.Command,
-			Payload:     string(payloadBytes),
+			Payload:     "{}",
 			Status:      "pending",
 		}
 		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payload.CommandID = cmd.ID
+		payloadBytes, _ := json.Marshal(payload)
+		if err := store.UpdateCommandPayload(db, cmd.ID, string(payloadBytes)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -139,14 +150,19 @@ func UpdateClientResource(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 			Version:     latest.Version,
 			DownloadURL: fmt.Sprintf("/files/resource/%s", filepathBase(latest.Filepath)),
 		}
-		payloadBytes, _ := json.Marshal(payload)
 		cmd := &model.ClientCommand{
 			ClientID:    client.ID,
 			CommandType: payload.Command,
-			Payload:     string(payloadBytes),
+			Payload:     "{}",
 			Status:      "pending",
 		}
 		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payload.CommandID = cmd.ID
+		payloadBytes, _ := json.Marshal(payload)
+		if err := store.UpdateCommandPayload(db, cmd.ID, string(payloadBytes)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -181,14 +197,19 @@ func UpdateClientName(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 			Command: "update_name",
 			Version: req.Name,
 		}
-		payloadBytes, _ := json.Marshal(payload)
 		cmd := &model.ClientCommand{
 			ClientID:    client.ID,
 			CommandType: payload.Command,
-			Payload:     string(payloadBytes),
+			Payload:     "{}",
 			Status:      "pending",
 		}
 		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payload.CommandID = cmd.ID
+		payloadBytes, _ := json.Marshal(payload)
+		if err := store.UpdateCommandPayload(db, cmd.ID, string(payloadBytes)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -241,14 +262,19 @@ func UpdateClientSelf(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 			Version:     latest.Version,
 			DownloadURL: fmt.Sprintf("/files/client/%s", filepathBase(latest.Filepath)),
 		}
-		payloadBytes, _ := json.Marshal(payload)
 		cmd := &model.ClientCommand{
 			ClientID:    client.ID,
 			CommandType: payload.Command,
-			Payload:     string(payloadBytes),
+			Payload:     "{}",
 			Status:      "pending",
 		}
 		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payload.CommandID = cmd.ID
+		payloadBytes, _ := json.Marshal(payload)
+		if err := store.UpdateCommandPayload(db, cmd.ID, string(payloadBytes)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -272,6 +298,28 @@ func RestartClientSoftware(hub *ws.Hub, db *store.DB) gin.HandlerFunc {
 	return sendSimpleCommand(hub, db, "restart")
 }
 
+// ListClientCommands 返回指定客户端最近的命令历史。
+func ListClientCommands(db *store.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		if _, err := store.GetClient(db, id); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "client not found"})
+			return
+		}
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		list, err := store.ListCommandsByClient(db, id, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, list)
+	}
+}
+
 // sendSimpleCommand 构造并下发简单的 start/stop/restart 控制命令，并将其状态保存为 pending。
 func sendSimpleCommand(hub *ws.Hub, db *store.DB, command string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -285,15 +333,22 @@ func sendSimpleCommand(hub *ws.Hub, db *store.DB, command string) gin.HandlerFun
 			c.JSON(http.StatusNotFound, gin.H{"error": "client not found"})
 			return
 		}
-		payload := model.CommandPayload{Command: command}
-		payloadBytes, _ := json.Marshal(payload)
 		cmd := &model.ClientCommand{
 			ClientID:    client.ID,
 			CommandType: command,
-			Payload:     string(payloadBytes),
+			Payload:     "{}",
 			Status:      "pending",
 		}
 		if err := store.CreateCommand(db, cmd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payload := model.CommandPayload{
+			CommandID: cmd.ID,
+			Command:   command,
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		if err := store.UpdateCommandPayload(db, cmd.ID, string(payloadBytes)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

@@ -253,6 +253,20 @@ func handleClientMessage(c *ClientConn, data []byte) {
 			c.Send <- []byte(cmd.Payload)
 			store.UpdateCommandStatus(c.Hub.db, cmd.ID, "sent")
 		}
+	case "command_feedback":
+		var fb model.CommandFeedback
+		payloadBytes, _ := json.Marshal(msg.Data)
+		if err := json.Unmarshal(payloadBytes, &fb); err != nil {
+			log.Printf("invalid command_feedback: %v", err)
+			return
+		}
+		if fb.CommandID == 0 {
+			log.Printf("command_feedback missing command_id")
+			return
+		}
+		if err := store.UpdateCommandFeedback(c.Hub.db, fb.CommandID, fb.Status, fb.Progress, fb.Message); err != nil {
+			log.Printf("update command feedback error: %v", err)
+		}
 	default:
 		log.Printf("unknown message type: %s", msg.Type)
 	}

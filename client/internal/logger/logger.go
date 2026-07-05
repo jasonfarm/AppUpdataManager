@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -25,6 +25,9 @@ const (
 	// LevelError 是错误级别。
 	LevelError Level = "ERROR"
 )
+
+// autoScrollResumeDelay 是手动滚动后恢复自动滚动的时间间隔。
+const autoScrollResumeDelay = 10 * time.Minute
 
 // Entry 表示一条日志记录。
 type Entry struct {
@@ -67,6 +70,33 @@ func (l *Logger) Close() error {
 		return err
 	}
 	return nil
+}
+
+// SetMaxEntries 动态设置内存中保留的最大日志条数。
+func (l *Logger) SetMaxEntries(n int) {
+	if n <= 0 {
+		n = 1000
+	}
+	l.mu.Lock()
+	l.maxEntries = n
+	if len(l.entries) > l.maxEntries {
+		l.entries = l.entries[len(l.entries)-l.maxEntries:]
+	}
+	listeners := make([]func(Entry), len(l.listeners))
+	copy(listeners, l.listeners)
+	l.mu.Unlock()
+
+	// 通知所有 view 重新刷新数据以应用新的上限。
+	for _, listener := range listeners {
+		listener(Entry{})
+	}
+}
+
+// MaxEntries 返回当前内存中保留的最大日志条数。
+func (l *Logger) MaxEntries() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.maxEntries
 }
 
 // AddListener 注册一个回调，每条新日志产生时都会调用该回调。
@@ -141,42 +171,77 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 }
 
 // CreateView 创建一个 Fyne UI 视图，用于展示日志列表。
+// 视图默认自动滚动到最新日志；用户手动滚动后会暂停自动滚动，10 分钟后恢复。
 func (l *Logger) CreateView() fyne.CanvasObject {
-	data := binding.NewStringList()
+	label := widget.NewLabel("")
+	label.Wrapping = fyne.TextWrapBreak
+	label.TextStyle = fyne.TextStyle{Monospace: true}
 
-	l.mu.RLock()
-	existing := make([]string, len(l.entries))
-	for i, e := range l.entries {
-		existing[i] = fmt.Sprintf("[%s] [%s] %s", e.Time.Format("2006-01-02 15:04:05"), e.Level, e.Message)
-	}
-	l.mu.RUnlock()
-	_ = data.Set(existing)
-
-	list := widget.NewListWithData(data,
-		func() fyne.CanvasObject {
-			return widget.NewLabel("template")
-		},
-		func(item binding.DataItem, o fyne.CanvasObject) {
-			str, _ := item.(binding.String).Get()
-			o.(*widget.Label).SetText(str)
-		},
-	)
-
-	scroll := container.NewScroll(list)
+	scroll := container.NewScroll(label)
 	scroll.SetMinSize(fyne.NewSize(580, 400))
 
-	l.AddListener(func(e Entry) {
-		line := fmt.Sprintf("[%s] [%s] %s", e.Time.Format("2006-01-02 15:04:05"), e.Level, e.Message)
-		_ = data.Append(line)
+	var (
+		autoScroll = true
+		pausedAt   time.Time
+		mu         sync.Mutex
+	)
 
-		// 限制 UI 数据列表大小，避免长时间运行后内存无限增长。
-		items, _ := data.Get()
-		if len(items) > l.maxEntries {
-			capped := make([]string, l.maxEntries)
-			copy(capped, items[len(items)-l.maxEntries:])
-			_ = data.Set(capped)
+	rebuildLabel := func() {
+		l.mu.RLock()
+		lines := make([]string, len(l.entries))
+		for i, e := range l.entries {
+			lines[i] = formatEntry(e)
+		}
+		l.mu.RUnlock()
+		label.SetText(strings.Join(lines, "\n"))
+	}
+
+	scrollToBottom := func() {
+		scroll.ScrollToBottom()
+	}
+
+	isNearBottom := func() bool {
+		contentHeight := scroll.Content.MinSize().Height
+		scrollHeight := scroll.Size().Height
+		if contentHeight <= scrollHeight {
+			return true
+		}
+		return scroll.Offset.Y >= contentHeight-scrollHeight-5
+	}
+
+	scroll.OnScrolled = func(pos fyne.Position) {
+		mu.Lock()
+		defer mu.Unlock()
+		if isNearBottom() {
+			autoScroll = true
+		} else {
+			autoScroll = false
+			pausedAt = time.Now()
+		}
+	}
+
+	l.AddListener(func(e Entry) {
+		mu.Lock()
+		shouldAuto := autoScroll
+		if !autoScroll && !pausedAt.IsZero() && time.Since(pausedAt) >= autoScrollResumeDelay {
+			autoScroll = true
+			shouldAuto = true
+		}
+		mu.Unlock()
+
+		rebuildLabel()
+
+		if shouldAuto {
+			scrollToBottom()
 		}
 	})
 
+	rebuildLabel()
+	scrollToBottom()
+
 	return scroll
+}
+
+func formatEntry(e Entry) string {
+	return fmt.Sprintf("[%s] [%s] %s", e.Time.Format("2006-01-02 15:04:05"), e.Level, e.Message)
 }
